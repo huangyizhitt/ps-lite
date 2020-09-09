@@ -18,6 +18,7 @@
 #include "./zmq_van.h"
 #include "./p3_van.h"
 #include "./uds_van.h"
+#include "./zmq_ipc_van.h"
 
 namespace ps {
 
@@ -36,9 +37,9 @@ Van* Van::Create(const std::string& type) {
 } else if (type == "ibverbs") {
     return new IBVerbsVan();
 #endif
-  } else if (type == 'uds') {
+  } else if (type == "uds") {
   	return new UDSVan();
-  } else if (type == 'zmq_ipc') {
+  } else if (type == "zmq_ipc") {
 	return new ZMQIPCVan();
   }else {
 	LOG(FATAL) << "Unsupported van type: " << type;

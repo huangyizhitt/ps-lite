@@ -15,7 +15,7 @@ class ZMQIPCVan : public Van {
 	
 public:
 	ZMQIPCVan() {}
-  	virtual ZMQIPCVan() {}
+  	virtual ~ZMQIPCVan() {}
 
 protected:
   	void Start(int customer_id) override {
@@ -53,13 +53,17 @@ protected:
     	receiver_ = zmq_socket(context_, ZMQ_ROUTER);
     	CHECK(receiver_ != NULL)
         	<< "create receiver socket failed: " << zmq_strerror(errno);
-    	const char *addr = "ipc:///tmp/XPU";
-    	int port = node.port = 9876;
-		for(int i = 1; i <= max_retry; i++) {
-			if (zmq_bind(receiver_, addr) == 0) break;
-			if (i == max_retry) {
-				port = node.port = -1;
-			} 
+    	std::string addr = "ipc:///tmp/XPU/";
+    	int port = node.port;
+	unsigned seed = static_cast<unsigned>(time(NULL) + port);
+		for(int i = 0; i <= max_retry; i++) {
+			std::string address = addr + std::to_string(port);
+			if (zmq_bind(receiver_, address.c_str()) == 0) break;
+			if (i == max_retry) { 
+				port = -1;
+			} else {
+				port = 10000 + rand_r(&seed) % 40000;
+			}
 		}
 
 		return port;
@@ -93,8 +97,8 @@ protected:
 	      	}
 	    }
 	    // connect
-	    const char *addr = "ipc:///tmp/XPU";
-	    if (zmq_connect(sender, addr) != 0) {
+	    std::string addr = "ipc:///tmp/XPU/" + std::to_string(node.port);
+	    if (zmq_connect(sender, addr.c_str()) != 0) {
 	      	LOG(FATAL) <<  "connect to " + addr + " failed: " + zmq_strerror(errno);
 	    }
 	    senders_[id] = sender;
