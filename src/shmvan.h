@@ -59,7 +59,7 @@ private:
 	void SetConnectRingbuffer(int client_shm_node_id);
 	void Notify(int pid, int signo, int vals);
 	void SignalConnect(int client_shm_node_id);
-	void SignalRecv(int );
+	void SignalRecv(int node_id);
 
 	int shmid;
 	int pid;
