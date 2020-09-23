@@ -17,8 +17,8 @@
 #include "./resender.h"
 #include "./zmq_van.h"
 #include "./p3_van.h"
-#include "./uds_van.h"
 #include "./zmq_ipc_van.h"
+#include "./shmvan.h"
 
 namespace ps {
 
@@ -37,9 +37,9 @@ Van* Van::Create(const std::string& type) {
 } else if (type == "ibverbs") {
     return new IBVerbsVan();
 #endif
-  } else if (type == "uds") {
-  	return new UDSVan();
-  } else if (type == "zmq_ipc") {
+  } else if (type == "shm") {
+		return new SHMVAN();
+	} else if (type == "zmq_ipc") {
 	return new ZMQIPCVan();
   }else {
 	LOG(FATAL) << "Unsupported van type: " << type;
@@ -278,6 +278,11 @@ void Van::Start(int customer_id) {
     scheduler_.id = kScheduler;
     is_scheduler_ = Postoffice::Get()->is_scheduler();
 
+	//added by huangyizhi, use shm van
+	if(is_shmvan) {
+		scheduler_.shm_id = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
+	}
+
     // get my node info
     if (is_scheduler_) {
       my_node_ = scheduler_;
@@ -309,6 +314,11 @@ void Van::Start(int customer_id) {
       // set it explicitly to make re-register within a same process possible
       my_node_.id = Node::kEmpty;
       my_node_.customer_id = customer_id;
+
+	  //added by huangyizhi, use shm van
+	  if(is_shmvan) {
+		my_node_.shm_id = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
+	  }
     }
 
     // bind.
@@ -407,8 +417,12 @@ void Van::Receiving() {
   Meta recovery_nodes;  // store recovery nodes
   recovery_nodes.control.cmd = Control::ADD_NODE;
 
-  while (true) {
+  while (true) {  
     Message msg;
+	if(is_shmvan) {
+		pause();
+	}
+
     int recv_bytes = RecvMsg(&msg);
     // For debug, drop received message
     if (ready_.load() && drop_rate_ > 0) {

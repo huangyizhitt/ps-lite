@@ -93,6 +93,9 @@ struct Node {
   /** \brief the port this node is binding */
   int port;
   /** \brief whether this node is created by failover */
+
+  int shm_id;											//only used share memory van
+  
   bool is_recovery;
 };
 /**

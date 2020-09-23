@@ -50,6 +50,9 @@ class Van {
    */
   virtual void Start(int customer_id);
 
+  inline void SetSHMVan() {is_shmvan = true;}
+  inline bool isShmVan() const {return is_shmvan;}
+
   /**
    * \brief send a message, It is thread-safe
    * \return the number of bytes sent. -1 if failed
@@ -156,6 +159,8 @@ class Van {
   int drop_rate_ = 0;
   std::atomic<int> timestamp_{0};
   int init_stage = 0;
+
+  bool is_shmvan = false;
 
   /**
    * \brief processing logic of AddNode message for scheduler
