@@ -22,19 +22,15 @@ struct ChildInfo {
 	int pid;
 	int recv_size;
 	int meta_size;
-	int server_id;
-	int sender;
-	int recever;
+	int node_id;
 };
 
+//all node create a van buf in Bind, record this node info and client info connected this nod
 struct VanBuf {
 	int flag;
-	int server_pid;	
-	int node_id;
-	int client_pid[64];
-	int client_size[64];
+	int pid;					
+	int shm_node_id;
 	ChildInfo client_info[64];
-//	RingBuf ring_buf[];
 };
 
 class SHMVAN : public Van{
@@ -56,21 +52,26 @@ public:
 	void Broadcast(const void *buf, size_t len, bool is_server);
 
 private:
-	static void SignalConnectHandle(int signo, siginfo_t *resdata, void *unknowp);
+	static void SHMVAN::SignalHandle(int signo, siginfo_t *resdata, void *unknowp);
+	
 	static void SignalRecvHandle(int signo);
 	void SetCurVan();
-	void SetConnectRingbuffer(int client_id, int client_node_id);
+	void SetConnectRingbuffer(int client_shm_node_id);
+	void Notify(int pid, int signo, int vals);
+	void SignalConnect(int client_shm_node_id);
+	void SignalRecv(int );
 
 	int shmid;
 	int pid;
-	int node_id;																
+	int shm_node_id;																		//used to generate key, allocate by script															
 	unsigned int connect_num;
+	int sender;
 	VanBuf *buf;
 	static SHMVAN *cur_van;
 
-	std::unordered_map<int, int> connect_id;												//connect_id[node.id]=server_id
-	std::unordered_map<int, int> connect_pid;												//connect_pid[server_id] = server_pid
-	std::unordered_map<int, std::pair<int, VanBuf *> > connect_buf;							//recorde <shmid, VanBuf>
+	std::unordered_map<int, int> c_id_map;													//node client id -> client shm node id(when this node is server)  
+	std::unordered_map<int, int> s_id_map;													//node server id -> server shm node id(when this node is clent)
+	std::unordered_map<int, std::pair<int, VanBuf *> > 	connect_buf;						//recorde <shmid, VanBuf>
 	std::unordered_map<int, std::pair<int, RingBuffer *> > connect_server_ringbuffer;		//this node is client node, recorde <shmid, server ringbuffer>;
 	std::unordered_map<int, std::pair<int, RingBuffer *> > connect_client_ringbuffer;		//this node is server node, recorde <shmid, client ringbuffer>;
 };
