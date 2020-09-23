@@ -20,6 +20,7 @@ struct RingBuffer {
 
 struct ChildInfo {
 	int pid;
+	int recving_threadid;
 	int recv_size;
 	int meta_size;
 	int node_id;
@@ -28,7 +29,8 @@ struct ChildInfo {
 //all node create a van buf in Bind, record this node info and client info connected this nod
 struct VanBuf {
 	int flag;
-	int pid;					
+	int pid;			
+	int recving_threadid;	
 	int shm_node_id;
 	ChildInfo client_info[64];
 };
@@ -57,12 +59,13 @@ private:
 	static void SignalRecvHandle(int signo);
 	void SetCurVan();
 	void SetConnectRingbuffer(int client_shm_node_id);
-	void Notify(int pid, int signo, int vals);
+	void Notify(int pid, int signo, int vals, bool is_thread);
 	void SignalConnect(int client_shm_node_id);
 	void SignalRecv(int node_id);
 
 	int shmid;
 	int pid;
+	int recving_threadid;
 	int shm_node_id;																		//used to generate key, allocate by script															
 	unsigned int connect_num;
 	int sender;

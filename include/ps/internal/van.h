@@ -66,7 +66,8 @@ class Van {
     CHECK(ready_) << "call Start() first";
     return my_node_;
   }
-
+ 
+  inline const std::thread *get_receiver_thread() const { return receiver_thread_.get(); }
   /**
    * \brief stop van
    * stop receiving threads

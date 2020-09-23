@@ -314,6 +314,9 @@ void Van::Start(int customer_id) {
     //added by huangyizhi, use shm van
     if(is_shmvan) {
 	my_node_.shm_id = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
+	my_node_.id = my_node_.shm_id + 10000; 
+	receiver_thread_ =
+                std::unique_ptr<std::thread>(new std::thread(&Van::Receiving, this));
     }
 
     // bind.
@@ -329,8 +332,10 @@ void Van::Start(int customer_id) {
       drop_rate_ = atoi(Environment::Get()->find("PS_DROP_MSG"));
     }
     // start receiver
-    receiver_thread_ =
-        std::unique_ptr<std::thread>(new std::thread(&Van::Receiving, this));
+
+    if(!is_shmvan)
+    	receiver_thread_ =
+        	std::unique_ptr<std::thread>(new std::thread(&Van::Receiving, this));
     init_stage++;
   }
   start_mu_.unlock();
@@ -415,9 +420,10 @@ void Van::Receiving() {
   while (true) {  
     Message msg;
 	if(is_shmvan) {
+		printf("Receiving, pid: %d, tid: %d\n", getpid(), pthread_self());
 		pause();
 	}
-
+	printf("Will Receiving!\n");
     int recv_bytes = RecvMsg(&msg);
     // For debug, drop received message
     if (ready_.load() && drop_rate_ > 0) {

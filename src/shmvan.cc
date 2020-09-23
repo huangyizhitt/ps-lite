@@ -259,6 +259,8 @@ void SHMVAN::SignalConnect(int client_shm_node_id)
 void SHMVAN::SignalRecv(int node_id)
 {
 	sender = node_id;
+	printf("SignalRecv node_id: %d\n", node_id);
+	pthread_kill(recving_threadid, SIGCONNECTED);
 }
 
 void SHMVAN::SetCurVan()
@@ -279,12 +281,15 @@ void SHMVAN::SetConnectRingbuffer(int client_shm_node_id)
 	connect_num++;
 }
 
-void SHMVAN::Notify(int pid, int signo, int vals)
+void SHMVAN::Notify(int pid, int signo, int vals, bool is_thread)
 {
 	union sigval sigvalue;
 	sigvalue.sival_int = vals;
-	sigqueue(pid, signo, sigvalue);
-	
+	if(is_thread) {
+		pthread_sigqueue(pid, signo, sigvalue);
+	} else {
+		sigqueue(pid, signo, sigvalue);
+	}
 }
 
 void SHMVAN::Start(int customer_id)
@@ -293,6 +298,7 @@ void SHMVAN::Start(int customer_id)
 	SetCurVan();
 	RegisterSignal(SIGCONNECT, SHMVAN::SignalHandle);	
 	RegisterSignal(SIGRECV, SHMVAN::SignalHandle);
+//	signal(SIGRECV, SignalDefaultHandle);
 	signal(SIGCONNECTED, SignalDefaultHandle);
 	SetSHMVan();
 	printf("Will begin start!\n");
@@ -303,9 +309,8 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 {
 	int key;
 	int port = node.port;
-
 	shm_node_id = node.shm_id;
-	
+
 	key = ftok("/tmp", shm_node_id);
 	if(key == -1) {
 		perror("ftok fail!\n");
@@ -323,6 +328,11 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 	buf->pid = pid;
 	buf->shm_node_id = shm_node_id;
 	buf->flag = BIND_FLAGS;
+
+	const std::thread *thread_obj = get_receiver_thread();
+	std::thread::id tid = thread_obj->get_id();
+	recving_threadid = buf->recving_threadid = *(int*)&tid;
+	printf("Bind success, pid: %d\n", buf->recving_threadid);
 	return port;
 }
 
@@ -342,13 +352,14 @@ void SHMVAN::Connect(const Node& node)
 
 	if(connect_buf.find(server_shm_node_id) != connect_buf.end()) {
 		printf("The node has connected!\n");
-
+		
 		//node.id is assigned by scheduler after van->start(), so should update the my_node_.id
- 		if(my_node_.id != p->client_info[shm_node_id].node_id) {
+ 		p = connect_buf[server_shm_node_id].second;
+		if(my_node_.id != p->client_info[shm_node_id].node_id) {
 			p->client_info[shm_node_id].node_id = my_node_.id;
 
 			//notify server update new client_node.id
-			Notify(p->pid, SIGCONNECT, shm_node_id);
+			Notify(p->pid, SIGCONNECT, shm_node_id, false);
 			pause();				//wait build connect;
 		}
 		
@@ -366,12 +377,13 @@ void SHMVAN::Connect(const Node& node)
 	printf("server_key: %d, server_shmid: %d\n", server_key, server_shmid);
 	while(p->flag != BIND_FLAGS);				//wait server LISTEN
 	p->client_info[shm_node_id].pid = pid;
+	p->client_info[shm_node_id].recving_threadid = recving_threadid;
 	p->client_info[shm_node_id].node_id = my_node_.id;
 	connect_buf[server_shm_node_id] = std::make_pair(server_shmid, p);
 	s_id_map[node.id] = server_shm_node_id;										//this node is client, record id map
 	
 	//send shm_node_id to server by sigqueue and build connect
-	Notify(p->pid, SIGCONNECT, shm_node_id);
+	Notify(p->pid, SIGCONNECT, shm_node_id, false);
 	pause();				//wait build connect;
 
 	CreateBufferFile(buffer_path, server_shm_node_id, shm_node_id);
@@ -464,7 +476,7 @@ ssize_t SHMVAN::Send(const int node_id, const void *buf, size_t len, bool is_ser
 		l += _l;
 		len -= _l;
 	}
-	printf("Send: size %dbytes\n", l);	
+	printf("Send: size %d bytes\n", l);	
 	return l;
 }
 
@@ -498,9 +510,9 @@ int SHMVAN::SendMsg(const Message& msg) {
 		p->client_info[shm_node_id].recv_size = size;
 		p->client_info[shm_node_id].meta_size = meta_size;
 	}
-	
-	Notify(target_pid, SIGRECV, my_node_.id);
 
+	printf("SendMsg: my node: %d, my mode shm: %d, target id: %d, target pid: %d\n", my_node_.id, shm_node_id, target_id, target_pid);
+	Notify(target_pid, SIGRECV, my_node_.id, false);
 	//send meta
 	while (true) {
 		if (Send(target_id, meta_buf, meta_size, is_server) == meta_size) break;
@@ -543,16 +555,17 @@ int SHMVAN::RecvMsg(Message* msg)
 		meta_size = p->client_info[shm_node_id].meta_size;
 	} else {
 		target_id = c_id_map[sender];
-		recv_bytes = p->client_info[target_id].recv_size;
-		meta_size = p->client_info[target_id].meta_size;
+		recv_bytes = buf->client_info[target_id].recv_size;
+		meta_size = buf->client_info[target_id].meta_size;
 	}
 
+	printf("is_client: %d, my shm node: %d, target_shm_id: %d\n", is_client, shm_node_id, target_id);
 	msg->meta.sender = sender;
     msg->meta.recver = my_node_.id;
 
 	char *meta_buf = (char *)malloc(meta_size);
 	
-	recv_counts = Recv(server_shm_id, meta_buf, meta_size, (!is_client));
+	recv_counts = Recv(target_id, meta_buf, meta_size, (!is_client));
 	if(recv_counts != meta_size) {
 		printf("Recv meta data fail!\n");
 		free(meta_buf);
@@ -563,7 +576,7 @@ int SHMVAN::RecvMsg(Message* msg)
 	free(meta_buf);
 
 	char *recv_buf = (char *)malloc(recv_bytes);
-	recv_counts = Recv(server_shm_id, recv_buf, recv_bytes, (!is_client));
+	recv_counts = Recv(target_id, recv_buf, recv_bytes, (!is_client));
 	if(recv_counts != recv_bytes) {
 		printf("Recv data fail!\n");
 		free(recv_buf);
