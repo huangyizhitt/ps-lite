@@ -273,7 +273,7 @@ void SHMVAN::SetConnectRingbuffer(int client_shm_node_id)
 	std::string buffer_path;
 
 	CreateBufferFile(buffer_path, shm_node_id, client_shm_node_id);
-	r = RingbufferCreate(buffer_path, MB(64), ringbuffer_shmid, node_id, true);
+	r = RingbufferCreate(buffer_path, MB(64), ringbuffer_shmid, shm_node_id, true);
 
 	connect_client_ringbuffer[client_shm_node_id] = std::make_pair(ringbuffer_shmid, r);
 	connect_num++;
@@ -306,7 +306,7 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 
 	shm_node_id = node.shm_id;
 	
-	key = ftok("/tmp", node_id);
+	key = ftok("/tmp", shm_node_id);
 	if(key == -1) {
 		perror("ftok fail!\n");
 		return -1;
@@ -448,7 +448,10 @@ ssize_t SHMVAN::Send(const int node_id, const void *buf, size_t len, bool is_ser
 			ring_buffer = connect_server_ringbuffer[node_id].second;
 	}
 
-	if(!ring_buffer) return -1;
+	if(!ring_buffer) {
+		printf("Node %d has no send ringbuffer!\n", node_id);
+		return -1;
+	}
 	
 	while(len > TRANSFER_SIZE) {
 		_l = RingBufferPut(ring_buffer, (unsigned char *)buf+l, TRANSFER_SIZE, is_server);
@@ -461,12 +464,13 @@ ssize_t SHMVAN::Send(const int node_id, const void *buf, size_t len, bool is_ser
 		l += _l;
 		len -= _l;
 	}
-	
+	printf("Send: size %dbytes\n", l);	
 	return l;
 }
 
 //Server send
 int SHMVAN::SendMsg(const Message& msg) {
+	bool is_server;
 
   	// find the socket
   	int id = msg.meta.recver;
@@ -475,6 +479,7 @@ int SHMVAN::SendMsg(const Message& msg) {
 	int target_id = c_id_map[id];
 	int client_pid = buf->client_info[target_id].pid;
 	
+	is_server == (connect_client_ringbuffer.find(target_id) != connect_client_ringbuffer.end())
   	// send meta
   	int meta_size; char* meta_buf;
   	PackMeta(msg.meta, &meta_buf, &meta_size);
@@ -489,7 +494,7 @@ int SHMVAN::SendMsg(const Message& msg) {
 	Notify(client_pid, SIGRECV, my_node_.id);
   
 	while (true) {
-		if (Send(target_id, meta_buf, meta_size, true) == meta_size) break;
+		if (Send(target_id, meta_buf, meta_size, is_server) == meta_size) break;
 		printf("WARNING failed to send meta data to node: %d, send size: %d\n", id, meta_size);
 		return -1;
 	}
@@ -503,7 +508,7 @@ int SHMVAN::SendMsg(const Message& msg) {
 		int data_size = data->size();
 		
 		while (true) {
-	  		if (Send(target_id, data, data_size, true) == data_size) break;
+	  		if (Send(target_id, data, data_size, is_server) == data_size) break;
 	  		printf("WARNING failed to send meta data to node: %d, send size: %d\n", id, data_size);
 	  		return -1;
 		}
@@ -518,14 +523,14 @@ int SHMVAN::RecvMsg(Message* msg)
 {
 	msg->data.clear();
 	int server_shm_id = s_id_map[sender];
-	struct VanBuf *p = connect_buf[server_shm_id];
+	struct VanBuf *p = connect_buf[server_shm_id].second;
 		
 	size_t recv_bytes = p->client_info[shm_node_id].recv_size;
 	int meta_size = p->client_info[shm_node_id].meta_size;
 	int recv_counts;
 
 	msg->meta.sender = sender;
-    msg->meta.recver = my_node_.id;
+    	msg->meta.recver = my_node_.id;
 
 	char *meta_buf = (char *)malloc(meta_size);
 	

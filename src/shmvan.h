@@ -52,7 +52,7 @@ public:
 	void Broadcast(const void *buf, size_t len, bool is_server);
 
 private:
-	static void SHMVAN::SignalHandle(int signo, siginfo_t *resdata, void *unknowp);
+	static void SignalHandle(int signo, siginfo_t *resdata, void *unknowp);
 	
 	static void SignalRecvHandle(int signo);
 	void SetCurVan();

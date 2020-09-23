@@ -278,11 +278,6 @@ void Van::Start(int customer_id) {
     scheduler_.id = kScheduler;
     is_scheduler_ = Postoffice::Get()->is_scheduler();
 
-	//added by huangyizhi, use shm van
-	if(is_shmvan) {
-		scheduler_.shm_id = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
-	}
-
     // get my node info
     if (is_scheduler_) {
       my_node_ = scheduler_;
@@ -314,11 +309,11 @@ void Van::Start(int customer_id) {
       // set it explicitly to make re-register within a same process possible
       my_node_.id = Node::kEmpty;
       my_node_.customer_id = customer_id;
+    }
 
-	  //added by huangyizhi, use shm van
-	  if(is_shmvan) {
-		my_node_.shm_id = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
-	  }
+    //added by huangyizhi, use shm van
+    if(is_shmvan) {
+	my_node_.shm_id = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
     }
 
     // bind.
