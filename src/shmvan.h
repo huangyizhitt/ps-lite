@@ -47,7 +47,8 @@ public:
 	virtual int Bind(const Node& node, int max_retry);
 	virtual void Connect(const Node& node);
 	void Listen();
-
+	virtual int RecvMsg(Message *msg);
+	virtual int SendMsg(const Message &msg);
 	int GetConnectNum() const {return connect_num;}
 
 	ssize_t Recv(const int node_id, void *buf, size_t len, bool is_server);

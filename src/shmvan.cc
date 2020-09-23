@@ -32,7 +32,7 @@
 
 #define TRANSFER_SIZE	(1 << 20)
 
-SHMVAN* SHMVAN::cur_van = NULL;
+ps::SHMVAN* ps::SHMVAN::cur_van = NULL;
 
 
 namespace ps {
@@ -260,6 +260,7 @@ void SHMVAN::Start(int customer_id)
 	signal(SIGCONNECTED, SignalHandle);
 	signal(SIGRECV, SignalHandle);
 	SetSHMVan();
+	printf("Will begin start!\n");
 	Van::Start(customer_id);
 }
 
@@ -273,7 +274,7 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 	key = ftok("/tmp", node_id);
 	if(key == -1) {
 		perror("ftok fail!\n");
-		return;
+		return -1;
 	}
 
 	shmid = shmget(key, sizeof(struct VanBuf), IPC_CREAT | 0777);
@@ -290,7 +291,7 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 	return port;
 }
 
-void SHMVAN::Connect(const Node& node) override
+void SHMVAN::Connect(const Node& node) 
 {
     CHECK_NE(node.port, node.kEmpty);
 	int server_key, server_shmid, ringbuffer_key, ringbuffer_shmid;
@@ -298,7 +299,7 @@ void SHMVAN::Connect(const Node& node) override
 	struct RingBuffer *r;
 	std::string buffer_path;
 	int id = node.shm_id;
-	const Node& my_node = my_node();
+	const Node& my_node = Van::my_node();
 
 	if(node_id == id) {
 		printf("Connect self is not nessecery!\n");
@@ -425,13 +426,13 @@ ssize_t SHMVAN::Send(const int node_id, const void *buf, size_t len, bool is_ser
 	return l;
 }
 
-int SHMVAN::SendMsg(const Message& msg) override {
+int SHMVAN::SendMsg(const Message& msg) {
 
   	// find the socket
   	int id = msg.meta.recver;
   	CHECK_NE(id, Meta::kEmpty);
 
-	int target_id = connect_id(id);
+	int target_id = connect_id[id];
 	int client_pid = buf->client_info[target_id].pid;
 	
   	// send meta
@@ -440,7 +441,7 @@ int SHMVAN::SendMsg(const Message& msg) override {
 	int size = 0;
 	int n = msg.data.size();
 	for(int i = 0; i < n; i++) {
-		size += msg.data[i]->size();
+		size += msg.data[i].size();
 	}
 	buf->client_info[target_id].recv_size = size;
 	buf->client_info[target_id].meta_size = meta_size;
@@ -473,7 +474,7 @@ int SHMVAN::SendMsg(const Message& msg) override {
   return send_bytes;
 }
 
-int SHMVAN::RecvMsg(Message* msg) override 
+int SHMVAN::RecvMsg(Message* msg) 
 {
 	msg->data.clear();
 	size_t recv_bytes = buf->client_info[node_id].recv_size;
@@ -481,7 +482,7 @@ int SHMVAN::RecvMsg(Message* msg) override
 	int target_id = buf->client_info[node_id].server_id;
 	int recv_counts;
 
-	msg->meta.sender = buf->client_info[target_id].sender
+	msg->meta.sender = buf->client_info[target_id].sender;
     msg->meta.recver = my_node_.id;
 
 	char *meta_buf = (char *)malloc(meta_size);
@@ -494,7 +495,7 @@ int SHMVAN::RecvMsg(Message* msg) override
 		return -1;
 	}
 
-	UnpackMeta(buf, meta_size, &(msg->meta));
+	UnpackMeta(meta_buf, meta_size, &(msg->meta));
 	free(meta_buf);
 
 	char *recv_buf = (char *)malloc(recv_bytes);
