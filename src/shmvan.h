@@ -55,6 +55,8 @@ public:
 	static void *Receiving(void *args);
 
 	void PackMeta(const Meta& meta, char **meta_buf, int *buf_size);
+	void UnpackMeta(const char* meta_buf, int buf_size, Meta* meta);
+	
 private:
 	static void SignalHandle(int signo, siginfo_t *resdata, void *unknowp);
 	

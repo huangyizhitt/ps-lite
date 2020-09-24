@@ -516,6 +516,85 @@ ssize_t SHMVAN::Send(const int node_id, const void *buf, size_t len, bool is_ser
 	return l;
 }
 
+void SHMVAN::PackMeta(const Meta& meta, char **meta_buf, int* buf_size) {
+  	// convert into protobuf
+	PBMeta pb;
+	pb.set_head(meta.head);
+	if (meta.app_id != Meta::kEmpty) pb.set_app_id(meta.app_id);
+	if (meta.timestamp != Meta::kEmpty) pb.set_timestamp(meta.timestamp);
+	if (meta.body.size()) pb.set_body(meta.body);
+	pb.set_push(meta.push);
+	pb.set_pull(meta.pull);
+	pb.set_request(meta.request);
+	pb.set_simple_app(meta.simple_app);
+	pb.set_priority(meta.priority);
+	pb.set_customer_id(meta.customer_id);
+	for (auto d : meta.data_type) pb.add_data_type(d);
+	if (!meta.control.empty()) {
+		auto ctrl = pb.mutable_control();
+		ctrl->set_cmd(meta.control.cmd);
+	if (meta.control.cmd == Control::BARRIER) {
+	  		ctrl->set_barrier_group(meta.control.barrier_group);
+		} else if (meta.control.cmd == Control::ACK) {
+	  		ctrl->set_msg_sig(meta.control.msg_sig);
+		}
+		for (const auto& n : meta.control.node) {
+		  	auto p = ctrl->add_node();
+		  	p->set_id(n.id);
+		  	p->set_role(n.role);
+		  	p->set_port(n.port);
+		  	p->set_hostname(n.hostname);
+		  	p->set_is_recovery(n.is_recovery);
+		  	p->set_customer_id(n.customer_id);
+		  	p->set_shm_id(n.shm_id);
+		  	p->set_init_id(n.init_id);
+		}
+	}
+}
+
+void SHMVAN::UnpackMeta(const char* meta_buf, int buf_size, Meta* meta) {
+	// to protobuf
+	PBMeta pb;
+	CHECK(pb.ParseFromArray(meta_buf, buf_size))
+	  << "failed to parse string into protobuf";
+
+	// to meta
+	meta->head = pb.head();
+	meta->app_id = pb.has_app_id() ? pb.app_id() : Meta::kEmpty;
+	meta->timestamp = pb.has_timestamp() ? pb.timestamp() : Meta::kEmpty;
+	meta->request = pb.request();
+	meta->push = pb.push();
+	meta->pull = pb.pull();
+	meta->simple_app = pb.simple_app();
+	meta->priority = pb.priority();
+	meta->body = pb.body();
+	meta->customer_id = pb.customer_id();
+	meta->data_type.resize(pb.data_type_size());
+  	for (int i = 0; i < pb.data_type_size(); ++i) {
+    	meta->data_type[i] = static_cast<DataType>(pb.data_type(i));
+  	}
+  	if (pb.has_control()) {
+    	const auto& ctrl = pb.control();
+   		meta->control.cmd = static_cast<Control::Command>(ctrl.cmd());
+    	meta->control.barrier_group = ctrl.barrier_group();
+    	meta->control.msg_sig = ctrl.msg_sig();
+    	for (int i = 0; i < ctrl.node_size(); ++i) {
+      		const auto& p = ctrl.node(i);
+      		Node n;
+      		n.role = static_cast<Node::Role>(p.role());
+      		n.port = p.port();
+      		n.hostname = p.hostname();
+      		n.id = p.has_id() ? p.id() : Node::kEmpty;
+      		n.is_recovery = p.is_recovery();
+      		n.customer_id = p.customer_id();
+			n.shm_id = p.shm_id();
+			n.init_id = p.init_id();
+      		meta->control.node.push_back(n);
+    	}	
+	} else {
+    	meta->control.cmd = Control::EMPTY;
+  	}
+}
 
 
 //Send msg, priority server to send data
