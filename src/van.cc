@@ -312,12 +312,12 @@ void Van::Start(int customer_id) {
     }
 
     //added by huangyizhi, use shm van
-    if(is_shmvan) {
+/*    if(is_shmvan) {
 	my_node_.shm_id = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
 	my_node_.id = my_node_.shm_id + 10000; 
 	receiver_thread_ =
                 std::unique_ptr<std::thread>(new std::thread(&Van::Receiving, this));
-    }
+    } */
 
     // bind.
     my_node_.port = Bind(my_node_, is_scheduler_ ? 0 : 40);
@@ -388,7 +388,8 @@ void Van::Stop() {
   exit.meta.customer_id = 0;
   int ret = SendMsg(exit);
   CHECK_NE(ret, -1);
-  receiver_thread_->join();
+  if(!is_shmvan)
+  	receiver_thread_->join();
   init_stage = 0;
   if (!is_scheduler_) heartbeat_thread_->join();
   if (resender_) delete resender_;
@@ -419,11 +420,6 @@ void Van::Receiving() {
 
   while (true) {  
     Message msg;
-	if(is_shmvan) {
-		printf("Receiving, pid: %d, tid: %d\n", getpid(), pthread_self());
-		pause();
-	}
-	printf("Will Receiving!\n");
     int recv_bytes = RecvMsg(&msg);
     // For debug, drop received message
     if (ready_.load() && drop_rate_ > 0) {

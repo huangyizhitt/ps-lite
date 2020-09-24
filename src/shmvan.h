@@ -52,6 +52,7 @@ public:
 	ssize_t Recv(const int node_id, void *buf, size_t len, bool is_server);
 	ssize_t Send(const int node_id, const void *buf, size_t len, bool is_server);
 	void Broadcast(const void *buf, size_t len, bool is_server);
+	virtual void *Receiving(void *args);
 
 private:
 	static void SignalHandle(int signo, siginfo_t *resdata, void *unknowp);
@@ -65,6 +66,9 @@ private:
 
 	int shmid;
 	int pid;
+	pthread_t tid;
+	pthread_mutex_t mutex;	
+	pthread_cond_t cond;
 	int recving_threadid;
 	int shm_node_id;																		//used to generate key, allocate by script															
 	unsigned int connect_num;

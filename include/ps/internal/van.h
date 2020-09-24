@@ -67,7 +67,6 @@ class Van {
     return my_node_;
   }
  
-  inline const std::thread *get_receiver_thread() const { return receiver_thread_.get(); }
   /**
    * \brief stop van
    * stop receiving threads
@@ -125,14 +124,17 @@ class Van {
    */
   void UnpackMeta(const char *meta_buf, int buf_size, Meta *meta);
 
+  virtual void *Receiving(void *args);
+
+   /** thread function for receving */
+  void Receiving();
+
   Node scheduler_;
   Node my_node_;
   bool is_scheduler_;
   std::mutex start_mu_;
 
  private:
-  /** thread function for receving */
-  void Receiving();
 
   /** thread function for heartbeat */
   void Heartbeat();

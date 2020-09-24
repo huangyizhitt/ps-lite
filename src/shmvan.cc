@@ -258,9 +258,11 @@ void SHMVAN::SignalConnect(int client_shm_node_id)
 //client process
 void SHMVAN::SignalRecv(int node_id)
 {
+	pthread_mutex_lock(&mutex);
 	sender = node_id;
 	printf("SignalRecv node_id: %d\n", node_id);
-	pthread_kill(recving_threadid, SIGCONNECTED);
+	pthread_cond_signal(&cond);
+	pthread_mutex_unlock(&mutex);
 }
 
 void SHMVAN::SetCurVan()
@@ -292,6 +294,15 @@ void SHMVAN::Notify(int pid, int signo, int vals, bool is_thread)
 	}
 }
 
+void* SHMVAN::Receiving(void *args)
+{
+	pthread_mutex_lock(&mutex);
+	pthread_cond_wait(&cond, &mutex);
+	printf("Will Receiving");
+	Van::Receiving();
+	pthread_mutex_unlock(&mutex);
+}
+
 void SHMVAN::Start(int customer_id)
 {
 	pid = getpid();
@@ -301,6 +312,9 @@ void SHMVAN::Start(int customer_id)
 //	signal(SIGRECV, SignalDefaultHandle);
 	signal(SIGCONNECTED, SignalDefaultHandle);
 	SetSHMVan();
+	pthread_cond_init(&cond, NULL);
+	pthread_mutex_init(&mutex, NULL);
+	pthread_create(&tid, NULL, Receiving, NULL);
 	printf("Will begin start!\n");
 	Van::Start(customer_id);
 }
@@ -310,6 +324,9 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 	int key;
 	int port = node.port;
 	shm_node_id = node.shm_id;
+
+	my_node_.shm_id = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
+	my_node_.id = my_node_.shm_id + 10000; 	
 
 	key = ftok("/tmp", shm_node_id);
 	if(key == -1) {
@@ -329,10 +346,7 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 	buf->shm_node_id = shm_node_id;
 	buf->flag = BIND_FLAGS;
 
-	const std::thread *thread_obj = get_receiver_thread();
-	std::thread::id tid = thread_obj->get_id();
-	recving_threadid = buf->recving_threadid = *(int*)&tid;
-	printf("Bind success, pid: %d\n", buf->recving_threadid);
+	printf("Bind success, pid: %d\n", pid);
 	return port;
 }
 
@@ -396,6 +410,8 @@ void SHMVAN::Connect(const Node& node)
 
 void SHMVAN::Stop()
 {
+	Van::Stop();
+	pthread_join(tid, NULL);
 	//delete connect buf
 	for(const auto& n : connect_buf) {
 		shmdt(n.second.second);
@@ -412,6 +428,7 @@ void SHMVAN::Stop()
 	//delete self buf
 	shmdt(buf);
 	shmctl(shmid, IPC_RMID, NULL);
+	
 	connect_buf.clear();
 	connect_server_ringbuffer.clear();
 	connect_client_ringbuffer.clear();
