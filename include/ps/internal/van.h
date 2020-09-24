@@ -83,6 +83,9 @@ class Van {
    */
   inline bool IsReady() { return ready_; }
 
+
+  /** thread function for receving */
+  void Receiving_();
  protected:
   /**
    * \brief connect to a node
@@ -124,11 +127,6 @@ class Van {
    */
   void UnpackMeta(const char *meta_buf, int buf_size, Meta *meta);
 
-  virtual void *Receiving(void *args);
-
-   /** thread function for receving */
-  void Receiving();
-
   Node scheduler_;
   Node my_node_;
   bool is_scheduler_;
@@ -136,6 +134,8 @@ class Van {
 
  private:
 
+  /** thread function for receving */
+  void Receiving();
   /** thread function for heartbeat */
   void Heartbeat();
 

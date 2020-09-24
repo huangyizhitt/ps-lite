@@ -9,6 +9,7 @@
 #include <cstring>
 #include <string>
 #include <signal.h>
+#include <atomic>
 #include "shmvan.h"
 #include "ps/internal/van.h"
 
@@ -33,7 +34,10 @@
 #define TRANSFER_SIZE	(1 << 20)
 
 ps::SHMVAN* ps::SHMVAN::cur_van = NULL;
-
+static pthread_t tid;
+static pthread_mutex_t mutex;
+static pthread_cond_t cond;
+std::atomic<bool> recv_flag(false);
 
 namespace ps {
 
@@ -260,6 +264,7 @@ void SHMVAN::SignalRecv(int node_id)
 {
 	pthread_mutex_lock(&mutex);
 	sender = node_id;
+	recv_flag = true;
 	printf("SignalRecv node_id: %d\n", node_id);
 	pthread_cond_signal(&cond);
 	pthread_mutex_unlock(&mutex);
@@ -295,12 +300,19 @@ void SHMVAN::Notify(int pid, int signo, int vals, bool is_thread)
 }
 
 void* SHMVAN::Receiving(void *args)
-{
-	pthread_mutex_lock(&mutex);
-	pthread_cond_wait(&cond, &mutex);
-	printf("Will Receiving");
-	Van::Receiving();
-	pthread_mutex_unlock(&mutex);
+{	
+	while(true) {
+		pthread_mutex_lock(&mutex);
+		//protected sprious wakeup in multicore system
+		while(!recv_flag) {
+			pthread_cond_wait(&cond, &mutex);
+		}
+		printf("Will Receiving!\n");
+		cur_van->Receiving_();
+		recv_flag = false;
+		pthread_mutex_unlock(&mutex);
+//		if(!cur_van->IsReady()) break;
+	}
 }
 
 void SHMVAN::Start(int customer_id)
@@ -324,9 +336,6 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 	int key;
 	int port = node.port;
 	shm_node_id = node.shm_id;
-
-	my_node_.shm_id = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
-	my_node_.id = my_node_.shm_id + 10000; 	
 
 	key = ftok("/tmp", shm_node_id);
 	if(key == -1) {
@@ -438,6 +447,8 @@ ssize_t SHMVAN::Recv(const int node_id, void *buf, size_t len, bool is_server)
 {
 	ssize_t l = 0, _l;
 	struct RingBuffer *ring_buffer = NULL;
+	
+	if(len == 0) return l;
 
 	if(is_server) {
 		if(connect_client_ringbuffer.find(node_id)!=connect_client_ringbuffer.end())
@@ -561,7 +572,7 @@ int SHMVAN::RecvMsg(Message* msg)
 {
 	int target_id, meta_size, recv_counts;
 	struct VanBuf *p;
-	size_t recv_bytes;
+	size_t recv_bytes = 0;
 	msg->data.clear();
 
 	bool is_client = (s_id_map.find(sender) != s_id_map.end());
@@ -576,7 +587,7 @@ int SHMVAN::RecvMsg(Message* msg)
 		meta_size = buf->client_info[target_id].meta_size;
 	}
 
-	printf("is_client: %d, my shm node: %d, target_shm_id: %d\n", is_client, shm_node_id, target_id);
+	printf("RecvMsg is_client: %d, my shm node: %d, target_shm_id: %d\n", is_client, shm_node_id, target_id);
 	msg->meta.sender = sender;
     msg->meta.recver = my_node_.id;
 

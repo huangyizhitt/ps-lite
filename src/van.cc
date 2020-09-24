@@ -312,12 +312,10 @@ void Van::Start(int customer_id) {
     }
 
     //added by huangyizhi, use shm van
-/*    if(is_shmvan) {
+    if(is_shmvan) {
 	my_node_.shm_id = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
 	my_node_.id = my_node_.shm_id + 10000; 
-	receiver_thread_ =
-                std::unique_ptr<std::thread>(new std::thread(&Van::Receiving, this));
-    } */
+    } 
 
     // bind.
     my_node_.port = Bind(my_node_, is_scheduler_ ? 0 : 40);
@@ -585,5 +583,49 @@ void Van::Heartbeat() {
     msg.meta.timestamp = timestamp_++;
     Send(msg);
   }
+}
+
+void Van::Receiving_()
+{
+    Meta nodes;
+    Meta recovery_nodes;  // store recovery nodes
+    recovery_nodes.control.cmd = Control::ADD_NODE;
+  
+    Message msg;
+    int recv_bytes = RecvMsg(&msg);
+    // For debug, drop received message
+    if (ready_.load() && drop_rate_ > 0) {
+      unsigned seed = time(NULL) + my_node_.id;
+      if (rand_r(&seed) % 100 < drop_rate_) {
+        LOG(WARNING) << "Drop message " << msg.DebugString();
+      	return;
+      }
+    }
+
+    CHECK_NE(recv_bytes, -1);
+    recv_bytes_ += recv_bytes;
+    if (Postoffice::Get()->verbose() >= 2) {
+      PS_VLOG(2) << msg.DebugString();
+    }
+    // duplicated message
+    if (resender_ && resender_->AddIncomming(msg)) return;
+
+    if (!msg.meta.control.empty()) {
+      // control msg
+      auto& ctrl = msg.meta.control;
+      if (ctrl.cmd == Control::TERMINATE) {
+        ProcessTerminateCommand();
+      } else if (ctrl.cmd == Control::ADD_NODE) {
+        ProcessAddNodeCommand(&msg, &nodes, &recovery_nodes);
+      } else if (ctrl.cmd == Control::BARRIER) {
+        ProcessBarrierCommand(&msg);
+      } else if (ctrl.cmd == Control::HEARTBEAT) {
+        ProcessHearbeat(&msg);
+      } else {
+        LOG(WARNING) << "Drop unknown typed message " << msg.DebugString();
+      }
+    } else {
+      ProcessDataMsg(&msg);
+    }
 }
 }  // namespace ps
