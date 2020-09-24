@@ -10,7 +10,9 @@
 #include <string>
 #include <signal.h>
 #include <atomic>
+
 #include "shmvan.h"
+#include "./meta.pb.h"
 #include "ps/internal/van.h"
 
 #define SIGCONNECT	40
@@ -58,6 +60,7 @@ static void RegisterSignal(int signo, Handle handle)
 
 static void SignalDefaultHandle(int sig)
 {
+	printf("[SignalDefaultHandle] do nothing, %d will be wake up!\n", getpid());
 	return;
 }
 
@@ -257,6 +260,7 @@ void SHMVAN::SignalConnect(int client_shm_node_id)
 	
 	int client_node_id = buf->client_info[client_shm_node_id].node_id;			//Get client node.id
 	c_id_map[client_node_id] = client_shm_node_id;								//this node is server, record id_map
+	printf("[SignalConnect] %d will wake up %d, client_node_id: %d, client_shm_node_id: %d\n", pid, buf->client_info[client_shm_node_id].pid, client_node_id, client_shm_node_id);
 	//wake up client process and notify build connect;
 	kill(buf->client_info[client_shm_node_id].pid, SIGCONNECTED);
 }
@@ -306,7 +310,16 @@ void* SHMVAN::Receiving(void *args)
 	Meta nodes;
 	Meta recovery_nodes;
 	recovery_nodes.control.cmd = Control::ADD_NODE;
-	
+
+	sigset_t mask;
+	sigemptyset(&mask);
+	sigaddset(&mask, SIGCONNECT);
+	sigaddset(&mask, SIGCONNECTED);
+	sigaddset(&mask, SIGSEND);
+	sigaddset(&mask, SIGRECV);
+
+	pthread_sigmask(SIG_BLOCK, &mask, NULL);	
+
 	while(true) {
 		pthread_mutex_lock(&mutex);
 		//protected sprious wakeup in multicore system
@@ -410,11 +423,12 @@ void SHMVAN::Connect(const Node& node)
 	p->client_info[shm_node_id].node_id = my_node_.init_id;
 	connect_buf[server_shm_node_id] = std::make_pair(server_shmid, p);
 	s_id_map[node.init_id] = server_shm_node_id;										//this node is client, record id map
-	
+
+	printf("[Connect] %d will notify %d, node_id: %d, shm_node_id: %d\n", pid, p->pid, p->client_info[shm_node_id].node_id, shm_node_id);	
 	//send shm_node_id to server by sigqueue and build connect
 	Notify(p->pid, SIGCONNECT, shm_node_id, false);
 	pause();				//wait build connect;
-
+	printf("[Connect] pause!\n");
 	CreateBufferFile(buffer_path, server_shm_node_id, shm_node_id);
 	r = RingbufferCreate(buffer_path, MB(64), ringbuffer_shmid, server_shm_node_id, false);
 	connect_server_ringbuffer[server_shm_node_id] = std::make_pair(ringbuffer_shmid, r);
@@ -550,6 +564,10 @@ void SHMVAN::PackMeta(const Meta& meta, char **meta_buf, int* buf_size) {
 		  	p->set_init_id(n.init_id);
 		}
 	}
+
+	*buf_size = pb.ByteSize();
+	*meta_buf = new char[*buf_size + 1];
+	CHECK(pb.SerializeToArray(*meta_buf, *buf_size)) << "failed to serialize protbuf";
 }
 
 void SHMVAN::UnpackMeta(const char* meta_buf, int buf_size, Meta* meta) {
