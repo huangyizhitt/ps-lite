@@ -300,7 +300,11 @@ void SHMVAN::Notify(int pid, int signo, int vals, bool is_thread)
 }
 
 void* SHMVAN::Receiving(void *args)
-{	
+{
+	Meta nodes;
+	Meta recovery_nodes;
+	recovery_nodes.control.cmd = Control::ADD_NODE;
+	
 	while(true) {
 		pthread_mutex_lock(&mutex);
 		//protected sprious wakeup in multicore system
@@ -308,7 +312,7 @@ void* SHMVAN::Receiving(void *args)
 			pthread_cond_wait(&cond, &mutex);
 		}
 		printf("Will Receiving!\n");
-		cur_van->Receiving_();
+		cur_van->Receiving_(nodes, recovery_nodes);
 		recv_flag = false;
 		pthread_mutex_unlock(&mutex);
 //		if(!cur_van->IsReady()) break;
@@ -480,6 +484,8 @@ ssize_t SHMVAN::Send(const int node_id, const void *buf, size_t len, bool is_ser
 	ssize_t l = 0, _l;
 	struct RingBuffer *ring_buffer = NULL;
 
+	if(len == 0) return l;
+
 	if(is_server) {
 		if(connect_client_ringbuffer.find(node_id)!=connect_client_ringbuffer.end())
 			ring_buffer = connect_client_ringbuffer[node_id].second;
@@ -548,7 +554,7 @@ int SHMVAN::SendMsg(const Message& msg) {
 		return -1;
 	}
 	delete meta_buf;
-	
+	printf("Send meta success, size: %d, control cmd: %d, control node size: %d\n", meta_size, msg.meta.control.cmd, msg.meta.control.node.size());
   	int send_bytes = meta_size;
 
 	// send data
@@ -588,8 +594,8 @@ int SHMVAN::RecvMsg(Message* msg)
 	}
 
 	printf("RecvMsg is_client: %d, my shm node: %d, target_shm_id: %d\n", is_client, shm_node_id, target_id);
-	msg->meta.sender = sender;
-    msg->meta.recver = my_node_.id;
+	msg->meta.sender = (sender == target_id + 10000) ? Meta::kEmpty : sender;			//sender == target_id + 10000 is in init stage, node don't have global ID
+    	msg->meta.recver = my_node_.id;
 
 	char *meta_buf = (char *)malloc(meta_size);
 	
@@ -602,7 +608,8 @@ int SHMVAN::RecvMsg(Message* msg)
 
 	UnpackMeta(meta_buf, meta_size, &(msg->meta));
 	free(meta_buf);
-
+	
+	printf("Receive meta success, size: %d, control cmd is: %d, control node size: %d\n", recv_counts, msg->meta.control.cmd, msg->meta.control.node.size());
 	char *recv_buf = (char *)malloc(recv_bytes);
 	recv_counts = Recv(target_id, recv_buf, recv_bytes, (!is_client));
 	if(recv_counts != recv_bytes) {

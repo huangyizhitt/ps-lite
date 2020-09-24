@@ -85,7 +85,7 @@ class Van {
 
 
   /** thread function for receving */
-  void Receiving_();
+  void Receiving_(Meta& nodes, Meta& recovery_nodes);
  protected:
   /**
    * \brief connect to a node

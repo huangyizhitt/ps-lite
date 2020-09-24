@@ -75,6 +75,7 @@ void Van::ProcessAddNodeCommandAtScheduler(Message* msg, Meta* nodes,
                      : Postoffice::WorkerRankToID(num_workers_);
         PS_VLOG(1) << "assign rank=" << id << " to node " << node.DebugString();
         node.id = id;
+	printf("[%s] node id: %d, node shm id: %d\n", __FUNCTION__, node.id, node.shm_id);
         Connect(node);
         Postoffice::Get()->UpdateHeartbeat(node.id, t);
         connected_nodes_[node_host_ip] = id;
@@ -247,7 +248,7 @@ void Van::ProcessAddNodeCommand(Message* msg, Meta* nodes,
   auto& ctrl = msg->meta.control;
 
   UpdateLocalID(msg, &dead_set, nodes, recovery_nodes);
-
+  printf("[%s] is_scheduler_: %d\n", __FUNCTION__, is_scheduler_);
   if (is_scheduler_) {
     ProcessAddNodeCommandAtScheduler(msg, nodes, recovery_nodes);
   } else {
@@ -585,14 +586,11 @@ void Van::Heartbeat() {
   }
 }
 
-void Van::Receiving_()
+void Van::Receiving_(Meta& nodes, Meta& recovery_nodes)
 {
-    Meta nodes;
-    Meta recovery_nodes;  // store recovery nodes
-    recovery_nodes.control.cmd = Control::ADD_NODE;
-  
     Message msg;
     int recv_bytes = RecvMsg(&msg);
+    printf("Van::Receiving_ RecvMsg success, size: %d\n", recv_bytes);
     // For debug, drop received message
     if (ready_.load() && drop_rate_ > 0) {
       unsigned seed = time(NULL) + my_node_.id;
@@ -613,6 +611,7 @@ void Van::Receiving_()
     if (!msg.meta.control.empty()) {
       // control msg
       auto& ctrl = msg.meta.control;
+      printf("[%s] ctrl.cmd: %d\n", __FUNCTION__, ctrl.cmd);
       if (ctrl.cmd == Control::TERMINATE) {
         ProcessTerminateCommand();
       } else if (ctrl.cmd == Control::ADD_NODE) {
@@ -627,5 +626,7 @@ void Van::Receiving_()
     } else {
       ProcessDataMsg(&msg);
     }
+
+    printf("Van::Receiving_ process data success!\n");
 }
 }  // namespace ps
