@@ -20,6 +20,8 @@
 
 #define BIND_FLAGS	0x12345678
 
+#define ID_OFFSET	10000
+
 #define is_power_of_2(x) ((x) != 0 && (((x) & ((x) - 1)) == 0))
 #define min(x,y) ({ typeof(x) _x = (x); typeof(y) _y = (y); (void) (&_x == &_y); _x < _y ? _x : _y; })
 #define max(x,y) ({ typeof(x) _x = (x); typeof(y) _y = (y); (void) (&_x == &_y); _x > _y ? _x : _y; })
@@ -339,7 +341,8 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 {
 	int key;
 	int port = node.port;
-	shm_node_id = node.shm_id;
+	shm_node_id = node.shm_id = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
+	node.init_id = (node.id == Node::kEmpty) ? shm_node_id + ID_OFFSET : node.id;
 
 	key = ftok("/tmp", shm_node_id);
 	if(key == -1) {
@@ -382,9 +385,9 @@ void SHMVAN::Connect(const Node& node)
 		
 		//node.id is assigned by scheduler after van->start(), so should update the my_node_.id
  		p = connect_buf[server_shm_node_id].second;
-		if(my_node_.id != p->client_info[shm_node_id].node_id) {
+		if(my_node_.id != p->client_info[shm_node_id].node_id && my_node_.id != Node::kEmpty) {
 			p->client_info[shm_node_id].node_id = my_node_.id;
-
+			
 			//notify server update new client_node.id
 			Notify(p->pid, SIGCONNECT, shm_node_id, false);
 			pause();				//wait build connect;
@@ -405,9 +408,9 @@ void SHMVAN::Connect(const Node& node)
 	while(p->flag != BIND_FLAGS);				//wait server LISTEN
 	p->client_info[shm_node_id].pid = pid;
 	p->client_info[shm_node_id].recving_threadid = recving_threadid;
-	p->client_info[shm_node_id].node_id = my_node_.id;
+	p->client_info[shm_node_id].node_id = my_node_.init_id;
 	connect_buf[server_shm_node_id] = std::make_pair(server_shmid, p);
-	s_id_map[node.id] = server_shm_node_id;										//this node is client, record id map
+	s_id_map[node.init_id] = server_shm_node_id;										//this node is client, record id map
 	
 	//send shm_node_id to server by sigqueue and build connect
 	Notify(p->pid, SIGCONNECT, shm_node_id, false);
@@ -545,8 +548,9 @@ int SHMVAN::SendMsg(const Message& msg) {
 		p->client_info[shm_node_id].meta_size = meta_size;
 	}
 
-	printf("SendMsg: my node: %d, my mode shm: %d, target id: %d, target pid: %d\n", my_node_.id, shm_node_id, target_id, target_pid);
-	Notify(target_pid, SIGRECV, my_node_.id, false);
+	int my_node_id = (my_node_.id == Node::kEmpty) ? my_node_.init_id : my_node_.id;
+	printf("SendMsg: my node: %d, my mode shm: %d, target id: %d, target pid: %d\n", my_node_id, shm_node_id, target_id, target_pid);
+	Notify(target_pid, SIGRECV, my_node_id, false);
 	//send meta
 	while (true) {
 		if (Send(target_id, meta_buf, meta_size, is_server) == meta_size) break;
@@ -594,7 +598,7 @@ int SHMVAN::RecvMsg(Message* msg)
 	}
 
 	printf("RecvMsg is_client: %d, my shm node: %d, target_shm_id: %d\n", is_client, shm_node_id, target_id);
-	msg->meta.sender = (sender == target_id + 10000) ? Meta::kEmpty : sender;			//sender == target_id + 10000 is in init stage, node don't have global ID
+	msg->meta.sender = (sender == target_id + ID_OFFSET) ? Meta::kEmpty : sender;			//sender == target_id + 10000 is in init stage, node don't have global ID
     	msg->meta.recver = my_node_.id;
 
 	char *meta_buf = (char *)malloc(meta_size);

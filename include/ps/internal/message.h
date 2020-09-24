@@ -95,6 +95,7 @@ struct Node {
   /** \brief whether this node is created by failover */
 
   int shm_id;											//only used share memory van
+  int init_id;											
   
   bool is_recovery;
 };

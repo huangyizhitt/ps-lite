@@ -67,7 +67,7 @@ private:
 	int shmid;
 	int pid;
 	int recving_threadid;
-	int shm_node_id;																		//used to generate key, allocate by script															
+	int shm_node_id;																		//used to generate key, allocate by script	
 	unsigned int connect_num;
 	int sender;
 	VanBuf *buf;
