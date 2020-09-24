@@ -311,7 +311,11 @@ void Van::Start(int customer_id) {
       my_node_.id = Node::kEmpty;
       my_node_.customer_id = customer_id;
     }
-
+	
+    if(is_shmvan) {
+    	my_node_.shm_id = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
+	my_node_.init_id = (my_node_.id == Node::kEmpty) ? my_node_.shm_id + 10000 : my_node_.id;
+    }
     // bind.
     my_node_.port = Bind(my_node_, is_scheduler_ ? 0 : 40);
     PS_VLOG(1) << "Bind to " << my_node_.DebugString();

@@ -341,8 +341,7 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 {
 	int key;
 	int port = node.port;
-	shm_node_id = node.shm_id = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
-	node.init_id = (node.id == Node::kEmpty) ? shm_node_id + ID_OFFSET : node.id;
+	shm_node_id = node.shm_id;
 
 	key = ftok("/tmp", shm_node_id);
 	if(key == -1) {
@@ -362,7 +361,7 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 	buf->shm_node_id = shm_node_id;
 	buf->flag = BIND_FLAGS;
 
-	printf("Bind success, pid: %d\n", pid);
+	printf("Bind success, pid: %d, node id: %d, node shm id: %d\n", pid, node.id, shm_node_id);
 	return port;
 }
 
@@ -516,6 +515,8 @@ ssize_t SHMVAN::Send(const int node_id, const void *buf, size_t len, bool is_ser
 	printf("Send: size %d bytes\n", l);	
 	return l;
 }
+
+
 
 //Send msg, priority server to send data
 int SHMVAN::SendMsg(const Message& msg) {

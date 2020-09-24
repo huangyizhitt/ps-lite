@@ -54,6 +54,7 @@ public:
 	void Broadcast(const void *buf, size_t len, bool is_server);
 	static void *Receiving(void *args);
 
+	void PackMeta(const Meta& meta, char **meta_buf, int *buf_size);
 private:
 	static void SignalHandle(int signo, siginfo_t *resdata, void *unknowp);
 	
