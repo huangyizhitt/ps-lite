@@ -10,6 +10,7 @@
 #include <string>
 #include <signal.h>
 #include <atomic>
+#include <errno.h>
 
 #include "shmvan.h"
 #include "./meta.pb.h"
@@ -37,11 +38,18 @@
 
 #define TRANSFER_SIZE	(1 << 20)
 
+enum FLAGS {
+	EMPTY_FLAG,
+	RECV_FLAG,
+	CONNECTED_FLAG,
+};
+
 ps::SHMVAN* ps::SHMVAN::cur_van = NULL;
-static pthread_t tid;
+static pthread_t recv_tid;
+static pthread_t signal_tid;
 static pthread_mutex_t mutex;
 static pthread_cond_t cond;
-std::atomic<bool> recv_flag(false);
+std::atomic<FLAGS> flags(EMPTY_FLAG);
 
 namespace ps {
 
@@ -228,31 +236,10 @@ static inline bool RingBufferFull(struct RingBuffer *ring_buffer)
 	return (ring_buffer->in - ring_buffer->out == ring_buffer->size);
 }
 
-
-void SHMVAN::SignalHandle(int signo, siginfo_t *resdata, void *unknowp)
+void SHMVAN::SignalConnect()
 {
-	int vals = resdata->si_value.sival_int;
-	switch(signo) {
-		case SIGCONNECT:
-			cur_van->SignalConnect(vals);
-			break;
-
-		case SIGRECV:
-			cur_van->SignalRecv(vals);
-			break;
-
-		case SIGSEND:
-
-			break;
-
-		default:
-			break;
-	}
-}
-
-//server process
-void SHMVAN::SignalConnect(int client_shm_node_id)
-{
+	int client_shm_node_id = buf->connector;
+	pthread_spin_unlock(&buf->lock);
 	printf("Will process client connect!\n");
 
 	if(connect_client_ringbuffer.find(client_shm_node_id) == connect_client_ringbuffer.end())
@@ -265,15 +252,48 @@ void SHMVAN::SignalConnect(int client_shm_node_id)
 	kill(buf->client_info[client_shm_node_id].pid, SIGCONNECTED);
 }
 
-//client process
-void SHMVAN::SignalRecv(int node_id)
+void SHMVAN::SignalConnected()
 {
 	pthread_mutex_lock(&mutex);
-	sender = node_id;
-	recv_flag = true;
+	flags = CONNECTED_FLAG;
+	pthread_cond_broadcast(&cond);
+	pthread_mutex_unlock(&mutex);
+}
+
+void SHMVAN::SignalRecv()
+{
+	sender = buf->connector;
+	pthread_spin_unlock(&buf->lock);
+	
+	pthread_mutex_lock(&mutex);
+	flags = RECV_FLAG;
 	printf("SignalRecv node_id: %d\n", node_id);
 	pthread_cond_signal(&cond);
 	pthread_mutex_unlock(&mutex);
+}
+
+void SHMVAN::SignalHandle(int signo)
+{
+	switch(signo) {
+		case SIGCONNECT:
+			cur_van->SignalConnect();
+			break;
+
+		case SIGCONNECTED:
+			cur_van->SignalConnected();
+			break;
+
+		case SIGRECV:
+			cur_van->SignalRecv();
+			break;
+
+		case SIGSEND:
+
+			break;
+
+		default:
+			break;
+	}
 }
 
 void SHMVAN::SetCurVan()
@@ -294,15 +314,21 @@ void SHMVAN::SetConnectRingbuffer(int client_shm_node_id)
 	connect_num++;
 }
 
-void SHMVAN::Notify(int pid, int signo, int vals, bool is_thread)
+void SHMVAN::Notify(int signo, struct VanBuf *buf, int vals)
 {
-	union sigval sigvalue;
-	sigvalue.sival_int = vals;
-	if(is_thread) {
-		pthread_sigqueue(pid, signo, sigvalue);
-	} else {
-		sigqueue(pid, signo, sigvalue);
+	pthread_spin_lock(&buf->lock);
+	buf->connector = vals;
+	kill(buf->pid, signo);
+}
+
+void SHMVAN::WaitConnect()
+{
+	pthread_mutex_lock(&mutex);
+	while(flags != CONNECTED_FLAG) {
+		pthread_cond_wait(&cond, &mutex);
 	}
+	flags = EMPTY_FLAG;
+	pthread_mutex_unlock(&mutex);
 }
 
 void* SHMVAN::Receiving(void *args)
@@ -311,7 +337,45 @@ void* SHMVAN::Receiving(void *args)
 	Meta recovery_nodes;
 	recovery_nodes.control.cmd = Control::ADD_NODE;
 
-	sigset_t mask;
+	while(true) {
+		pthread_mutex_lock(&mutex);
+		//protected sprious wakeup in multicore system
+		while(flags != RECV_FLAG) {
+			pthread_cond_wait(&cond, &mutex);
+		}
+		printf("Will Receiving!\n");
+		cur_van->Receiving_(nodes, recovery_nodes);
+		flags = EMPTY_FLAG;
+		pthread_mutex_unlock(&mutex);
+//		if(!cur_van->IsReady()) break;
+	}
+
+	return NULL;
+}
+
+void* SHMVAN::SignalThread(void *args)
+{
+	sigset_t *set = (sigset_t *)args;
+	int s, sig;
+	
+	while(1) {
+		s = sigwait(set, &sig);
+		if(s == 0) {
+			SignalHandle(sig);
+		} else {
+			printf("sigwait returned err: %d; %s\n", errno, strerror(errno));
+		}
+	}
+
+	return NULL;
+}
+
+void SHMVAN::Start(int customer_id)
+{
+	pid = getpid();
+	SetCurVan();
+	SetSHMVan();
+
 	sigemptyset(&mask);
 	sigaddset(&mask, SIGCONNECT);
 	sigaddset(&mask, SIGCONNECTED);
@@ -319,33 +383,11 @@ void* SHMVAN::Receiving(void *args)
 	sigaddset(&mask, SIGRECV);
 
 	pthread_sigmask(SIG_BLOCK, &mask, NULL);	
-
-	while(true) {
-		pthread_mutex_lock(&mutex);
-		//protected sprious wakeup in multicore system
-		while(!recv_flag) {
-			pthread_cond_wait(&cond, &mutex);
-		}
-		printf("Will Receiving!\n");
-		cur_van->Receiving_(nodes, recovery_nodes);
-		recv_flag = false;
-		pthread_mutex_unlock(&mutex);
-//		if(!cur_van->IsReady()) break;
-	}
-}
-
-void SHMVAN::Start(int customer_id)
-{
-	pid = getpid();
-	SetCurVan();
-	RegisterSignal(SIGCONNECT, SHMVAN::SignalHandle);	
-	RegisterSignal(SIGRECV, SHMVAN::SignalHandle);
-//	signal(SIGRECV, SignalDefaultHandle);
-	signal(SIGCONNECTED, SignalDefaultHandle);
-	SetSHMVan();
+	
 	pthread_cond_init(&cond, NULL);
 	pthread_mutex_init(&mutex, NULL);
-	pthread_create(&tid, NULL, Receiving, NULL);
+	pthread_create(&recv_tid, NULL, Receiving, NULL);
+	pthread_create(&signal_tid, NULL, SignalThread, (void *)&mask);
 	printf("Will begin start!\n");
 	Van::Start(customer_id);
 }
@@ -373,7 +415,8 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 	buf->pid = pid;
 	buf->shm_node_id = shm_node_id;
 	buf->flag = BIND_FLAGS;
-
+	pthread_spin_init(&buf->lock, PTHREAD_PROCESS_SHARED);
+	
 	printf("Bind success, pid: %d, node id: %d, node shm id: %d\n", pid, node.id, shm_node_id);
 	return port;
 }
@@ -401,8 +444,8 @@ void SHMVAN::Connect(const Node& node)
 			p->client_info[shm_node_id].node_id = my_node_.id;
 			
 			//notify server update new client_node.id
-			Notify(p->pid, SIGCONNECT, shm_node_id, false);
-			pause();				//wait build connect;
+			Notify(SIGCONNECT, p, shm_node_id);
+			WaitConnect();				//wait build connect;
 		}
 		
 		return;
@@ -426,8 +469,8 @@ void SHMVAN::Connect(const Node& node)
 
 	printf("[Connect] %d will notify %d, node_id: %d, shm_node_id: %d\n", pid, p->pid, p->client_info[shm_node_id].node_id, shm_node_id);	
 	//send shm_node_id to server by sigqueue and build connect
-	Notify(p->pid, SIGCONNECT, shm_node_id, false);
-	pause();				//wait build connect;
+	Notify(SIGCONNECT, shm_node_id, false);
+	WaitConnect();				//wait build connect;
 	printf("[Connect] pause!\n");
 	CreateBufferFile(buffer_path, server_shm_node_id, shm_node_id);
 	r = RingbufferCreate(buffer_path, MB(64), ringbuffer_shmid, server_shm_node_id, false);
@@ -632,15 +675,17 @@ int SHMVAN::SendMsg(const Message& msg) {
 	}
 
 	int target_id, target_pid;
+	struct VanBuf *p;
 
 	if(is_server) {
+		p = buf;
 		target_id = c_id_map[id];
 		target_pid = buf->client_info[target_id].pid;
-		buf->client_info[target_id].recv_size = size;
-		buf->client_info[target_id].meta_size = meta_size;
+		p->client_info[target_id].recv_size = size;
+		p->client_info[target_id].meta_size = meta_size;
 	} else {
+		p = connect_buf[target_id].second;
 		target_id = s_id_map[id];
-		struct VanBuf *p = connect_buf[target_id].second;
 		target_pid = p->pid;
 		p->client_info[shm_node_id].recv_size = size;
 		p->client_info[shm_node_id].meta_size = meta_size;
@@ -648,7 +693,7 @@ int SHMVAN::SendMsg(const Message& msg) {
 
 	int my_node_id = (my_node_.id == Node::kEmpty) ? my_node_.init_id : my_node_.id;
 	printf("SendMsg: my node: %d, my mode shm: %d, target id: %d, target pid: %d\n", my_node_id, shm_node_id, target_id, target_pid);
-	Notify(target_pid, SIGRECV, my_node_id, false);
+	Notify(SIGRECV, p, my_node_id);
 	//send meta
 	while (true) {
 		if (Send(target_id, meta_buf, meta_size, is_server) == meta_size) break;
