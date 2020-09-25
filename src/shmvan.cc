@@ -47,9 +47,12 @@ enum FLAGS {
 ps::SHMVAN* ps::SHMVAN::cur_van = NULL;
 static pthread_t recv_tid;
 static pthread_t signal_tid;
-static pthread_mutex_t mutex;
-static pthread_cond_t cond;
+static pthread_mutex_t recv_mutex;
+static pthread_mutex_t connect_mutex;
+static pthread_cond_t recv_cond;
+static pthread_cond_t connect_cond;
 std::atomic<FLAGS> flags(EMPTY_FLAG);
+sigset_t mask;
 
 namespace ps {
 
@@ -240,7 +243,7 @@ void SHMVAN::SignalConnect()
 {
 	int client_shm_node_id = buf->connector;
 	pthread_spin_unlock(&buf->lock);
-	printf("Will process client connect!\n");
+	printf("Process %d will process client connect!\n", pid);
 
 	if(connect_client_ringbuffer.find(client_shm_node_id) == connect_client_ringbuffer.end())
 		SetConnectRingbuffer(client_shm_node_id);
@@ -254,10 +257,12 @@ void SHMVAN::SignalConnect()
 
 void SHMVAN::SignalConnected()
 {
-	pthread_mutex_lock(&mutex);
+	printf("Process %d SignalConnected entry\n", pid);
+	pthread_mutex_lock(&connect_mutex);
 	flags = CONNECTED_FLAG;
-	pthread_cond_broadcast(&cond);
-	pthread_mutex_unlock(&mutex);
+	pthread_cond_broadcast(&connect_cond);
+	pthread_mutex_unlock(&connect_mutex);
+	printf("Process %d SignalConnected exit\n", pid);
 }
 
 void SHMVAN::SignalRecv()
@@ -265,11 +270,11 @@ void SHMVAN::SignalRecv()
 	sender = buf->connector;
 	pthread_spin_unlock(&buf->lock);
 	
-	pthread_mutex_lock(&mutex);
+	pthread_mutex_lock(&recv_mutex);
 	flags = RECV_FLAG;
-	printf("SignalRecv node_id: %d\n", node_id);
-	pthread_cond_signal(&cond);
-	pthread_mutex_unlock(&mutex);
+	printf("SignalRecv sender is: %d\n", sender);
+	pthread_cond_signal(&recv_cond);
+	pthread_mutex_unlock(&recv_mutex);
 }
 
 void SHMVAN::SignalHandle(int signo)
@@ -323,12 +328,15 @@ void SHMVAN::Notify(int signo, struct VanBuf *buf, int vals)
 
 void SHMVAN::WaitConnect()
 {
-	pthread_mutex_lock(&mutex);
+	printf("Wait connect entry!\n");
+	pthread_mutex_lock(&connect_mutex);
 	while(flags != CONNECTED_FLAG) {
-		pthread_cond_wait(&cond, &mutex);
+		pthread_cond_wait(&connect_cond, &connect_mutex);
 	}
+	std::cout << "Wait connected, flags: " << flags << std::endl; 
 	flags = EMPTY_FLAG;
-	pthread_mutex_unlock(&mutex);
+	pthread_mutex_unlock(&connect_mutex);
+	printf("Wait connect exit!\n");
 }
 
 void* SHMVAN::Receiving(void *args)
@@ -338,15 +346,15 @@ void* SHMVAN::Receiving(void *args)
 	recovery_nodes.control.cmd = Control::ADD_NODE;
 
 	while(true) {
-		pthread_mutex_lock(&mutex);
+		pthread_mutex_lock(&recv_mutex);
 		//protected sprious wakeup in multicore system
 		while(flags != RECV_FLAG) {
-			pthread_cond_wait(&cond, &mutex);
+			pthread_cond_wait(&recv_cond, &recv_mutex);
 		}
 		printf("Will Receiving!\n");
 		cur_van->Receiving_(nodes, recovery_nodes);
 		flags = EMPTY_FLAG;
-		pthread_mutex_unlock(&mutex);
+		pthread_mutex_unlock(&recv_mutex);
 //		if(!cur_van->IsReady()) break;
 	}
 
@@ -384,8 +392,10 @@ void SHMVAN::Start(int customer_id)
 
 	pthread_sigmask(SIG_BLOCK, &mask, NULL);	
 	
-	pthread_cond_init(&cond, NULL);
-	pthread_mutex_init(&mutex, NULL);
+	pthread_cond_init(&recv_cond, NULL);
+	pthread_cond_init(&connect_cond, NULL);
+	pthread_mutex_init(&recv_mutex, NULL);
+	pthread_mutex_init(&connect_mutex, NULL);
 	pthread_create(&recv_tid, NULL, Receiving, NULL);
 	pthread_create(&signal_tid, NULL, SignalThread, (void *)&mask);
 	printf("Will begin start!\n");
@@ -397,7 +407,7 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 	int key;
 	int port = node.port;
 	shm_node_id = node.shm_id;
-
+	
 	key = ftok("/tmp", shm_node_id);
 	if(key == -1) {
 		perror("ftok fail!\n");
@@ -415,6 +425,7 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 	buf->pid = pid;
 	buf->shm_node_id = shm_node_id;
 	buf->flag = BIND_FLAGS;
+
 	pthread_spin_init(&buf->lock, PTHREAD_PROCESS_SHARED);
 	
 	printf("Bind success, pid: %d, node id: %d, node shm id: %d\n", pid, node.id, shm_node_id);
@@ -469,7 +480,7 @@ void SHMVAN::Connect(const Node& node)
 
 	printf("[Connect] %d will notify %d, node_id: %d, shm_node_id: %d\n", pid, p->pid, p->client_info[shm_node_id].node_id, shm_node_id);	
 	//send shm_node_id to server by sigqueue and build connect
-	Notify(SIGCONNECT, shm_node_id, false);
+	Notify(SIGCONNECT, p, shm_node_id);
 	WaitConnect();				//wait build connect;
 	printf("[Connect] pause!\n");
 	CreateBufferFile(buffer_path, server_shm_node_id, shm_node_id);
@@ -483,7 +494,8 @@ void SHMVAN::Connect(const Node& node)
 void SHMVAN::Stop()
 {
 	Van::Stop();
-	pthread_join(tid, NULL);
+	pthread_join(recv_tid, NULL);
+	pthread_join(signal_tid, NULL);
 	//delete connect buf
 	for(const auto& n : connect_buf) {
 		shmdt(n.second.second);

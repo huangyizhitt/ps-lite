@@ -60,7 +60,7 @@ public:
 	
 private:
 	static void SignalHandle(int signo);
-	void* SignalThread(void *args);
+	static void* SignalThread(void *args);
 	
 	static void SignalRecvHandle(int signo);
 	void SetCurVan();
@@ -79,7 +79,6 @@ private:
 	int sender;
 	VanBuf *buf;
 	static SHMVAN *cur_van;
-	sigset_t mask;
 	
 	std::unordered_map<int, int> c_id_map;													//node client id -> client shm node id(when this node is server)  
 	std::unordered_map<int, int> s_id_map;													//node server id -> server shm node id(when this node is clent)
