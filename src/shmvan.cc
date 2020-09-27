@@ -268,6 +268,7 @@ void SHMVAN::SignalConnected()
 void SHMVAN::SignalRecv()
 {
 	sender = buf->connector;
+	sender_identity = buf->sender_identity;
 	pthread_spin_unlock(&buf->lock);
 	
 	pthread_mutex_lock(&recv_mutex);
@@ -323,6 +324,14 @@ void SHMVAN::Notify(int signo, struct VanBuf *buf, int vals)
 {
 	pthread_spin_lock(&buf->lock);
 	buf->connector = vals;
+	kill(buf->pid, signo);
+}
+
+void SHMVAN::Notify(int signo, struct VanBuf *buf, int vals, int sender_identity)
+{
+	pthread_spin_lock(&buf->lock);
+	buf->connector = vals;
+	buf->sender_identity = sender_identity;
 	kill(buf->pid, signo);
 }
 
@@ -474,9 +483,10 @@ void SHMVAN::Connect(const Node& node)
 	while(p->flag != BIND_FLAGS);				//wait server LISTEN
 	p->client_info[shm_node_id].pid = pid;
 	p->client_info[shm_node_id].recving_threadid = recving_threadid;
-	p->client_info[shm_node_id].node_id = my_node_.init_id;
+	p->client_info[shm_node_id].node_id = (my_node_.id != Node::kEmpty) ? my_node_.id : my_node_.init_id;
 	connect_buf[server_shm_node_id] = std::make_pair(server_shmid, p);
-	s_id_map[node.init_id] = server_shm_node_id;										//this node is client, record id map
+	int server_id = (node.id != Node::kEmpty) ? node.id : node.init_id;
+	s_id_map[server_id] = server_shm_node_id;										//this node is client, record id map
 
 	printf("[Connect] %d will notify %d, node_id: %d, shm_node_id: %d\n", pid, p->pid, p->client_info[shm_node_id].node_id, shm_node_id);	
 	//send shm_node_id to server by sigqueue and build connect
@@ -675,7 +685,7 @@ int SHMVAN::SendMsg(const Message& msg) {
   	// find the socket
   	int id = msg.meta.recver;
   	CHECK_NE(id, Meta::kEmpty);
-
+	printf("SendMsg!\n");
 	bool is_server = (c_id_map.find(id) != c_id_map.end());
 	
   	int meta_size; char* meta_buf;
@@ -688,7 +698,7 @@ int SHMVAN::SendMsg(const Message& msg) {
 
 	int target_id, target_pid;
 	struct VanBuf *p;
-
+	printf("is_server: %d, recver: %d\n", is_server, id);
 	if(is_server) {
 		p = buf;
 		target_id = c_id_map[id];
@@ -696,8 +706,8 @@ int SHMVAN::SendMsg(const Message& msg) {
 		p->client_info[target_id].recv_size = size;
 		p->client_info[target_id].meta_size = meta_size;
 	} else {
-		p = connect_buf[target_id].second;
 		target_id = s_id_map[id];
+		p = connect_buf[target_id].second;
 		target_pid = p->pid;
 		p->client_info[shm_node_id].recv_size = size;
 		p->client_info[shm_node_id].meta_size = meta_size;
@@ -705,7 +715,7 @@ int SHMVAN::SendMsg(const Message& msg) {
 
 	int my_node_id = (my_node_.id == Node::kEmpty) ? my_node_.init_id : my_node_.id;
 	printf("SendMsg: my node: %d, my mode shm: %d, target id: %d, target pid: %d\n", my_node_id, shm_node_id, target_id, target_pid);
-	Notify(SIGRECV, p, my_node_id);
+	Notify(SIGRECV, p, my_node_id, is_server);
 	//send meta
 	while (true) {
 		if (Send(target_id, meta_buf, meta_size, is_server) == meta_size) break;
@@ -740,7 +750,8 @@ int SHMVAN::RecvMsg(Message* msg)
 	size_t recv_bytes = 0;
 	msg->data.clear();
 
-	bool is_client = (s_id_map.find(sender) != s_id_map.end());
+//	bool is_client = (s_id_map.find(sender) != s_id_map.end());
+	bool is_client = sender_identity;		//if sender is server, this is client
 	if(is_client) {
 		target_id = s_id_map[sender];
 		p = connect_buf[target_id].second;

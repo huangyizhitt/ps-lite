@@ -30,7 +30,8 @@ struct ChildInfo {
 struct VanBuf {
 	int flag;
 	int pid;			
-	int connector;	
+	int connector;
+	int sender_identity;	
 	int shm_node_id;
 	pthread_spinlock_t lock;					//protect connector
 	ChildInfo client_info[64];
@@ -66,6 +67,7 @@ private:
 	void SetCurVan();
 	void SetConnectRingbuffer(int client_shm_node_id);
 	void Notify(int signo, struct VanBuf *buf, int vals);
+	void Notify(int signo, struct VanBuf *buf, int vals, int send_identity);
 	void SignalConnect();
 	void SignalRecv();
 	void SignalConnected();
@@ -77,6 +79,7 @@ private:
 	int shm_node_id;																		//used to generate key, allocate by script	
 	unsigned int connect_num;
 	int sender;
+	bool sender_identity;
 	VanBuf *buf;
 	static SHMVAN *cur_van;
 	
