@@ -67,7 +67,7 @@ private:
 	void SetCurVan();
 	void SetConnectRingbuffer(int client_shm_node_id);
 	void Notify(int signo, struct VanBuf *buf, int vals);
-	void Notify(int signo, struct VanBuf *buf, int vals, int send_identity);
+	void Notify(int signo, int pid, struct VanBuf *buf, int vals, int send_identity);
 	void SignalConnect();
 	void SignalRecv();
 	void SignalConnected();
