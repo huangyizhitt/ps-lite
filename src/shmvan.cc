@@ -775,7 +775,7 @@ int SHMVAN::RecvMsg(Message* msg)
 	char *meta_buf = (char *)malloc(meta_size);
 	
 	recv_counts = Recv(target_id, meta_buf, meta_size, (!is_client));
-	if(recv_counts != meta_size) {
+	if(recv_counts != meta_size) {
 		printf("Recv meta data fail!\n");
 		free(meta_buf);
 		return -1;
@@ -783,15 +783,19 @@ int SHMVAN::RecvMsg(Message* msg)
 
 	UnpackMeta(meta_buf, meta_size, &(msg->meta));
 	free(meta_buf);
-	
-	char *recv_buf = (char *)malloc(recv_bytes);
-	recv_counts += Recv(target_id, recv_buf, recv_bytes, (!is_client));
-	if(recv_counts != recv_bytes + meta_size) {
-		printf("Recv data fail!\n");
-		free(recv_buf);
-		return -1;
-	}
 
+	if(recv_bytes > 0) {	
+		char *recv_buf = (char *)malloc(recv_bytes);
+		recv_counts += Recv(target_id, recv_buf, recv_bytes, (!is_client));
+		if(recv_counts != recv_bytes + meta_size) {
+			printf("Recv data fail!\n");
+			free(recv_buf);
+			return -1;
+		}
+		SArray<char> data;
+		data.reset(recv_buf, recv_bytes, [](char *recv_buf){free(recv_buf);});
+		msg->data.push_back(data);
+	}
 	printf("%d recv %ld bytes from %d success!\n",  msg->meta.recver, recv_counts, msg->meta.sender);
 	return recv_counts;
 }
