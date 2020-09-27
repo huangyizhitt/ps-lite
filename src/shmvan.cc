@@ -243,7 +243,6 @@ void SHMVAN::SignalConnect()
 {
 	int client_shm_node_id = buf->connector;
 	pthread_spin_unlock(&buf->lock);
-	printf("Process %d will process client connect!\n", pid);
 
 	if(connect_client_ringbuffer.find(client_shm_node_id) == connect_client_ringbuffer.end())
 		SetConnectRingbuffer(client_shm_node_id);
@@ -257,12 +256,10 @@ void SHMVAN::SignalConnect()
 
 void SHMVAN::SignalConnected()
 {
-	printf("Process %d SignalConnected entry\n", pid);
 	pthread_mutex_lock(&connect_mutex);
 	flags = CONNECTED_FLAG;
 	pthread_cond_broadcast(&connect_cond);
 	pthread_mutex_unlock(&connect_mutex);
-	printf("Process %d SignalConnected exit\n", pid);
 }
 
 void SHMVAN::SignalRecv()
@@ -273,7 +270,6 @@ void SHMVAN::SignalRecv()
 	
 	pthread_mutex_lock(&recv_mutex);
 	flags = RECV_FLAG;
-	printf("SignalRecv sender is: %d\n", sender);
 	pthread_cond_signal(&recv_cond);
 	pthread_mutex_unlock(&recv_mutex);
 }
@@ -337,15 +333,12 @@ void SHMVAN::Notify(int signo, struct VanBuf *buf, int vals, int sender_identity
 
 void SHMVAN::WaitConnect()
 {
-	printf("Wait connect entry!\n");
 	pthread_mutex_lock(&connect_mutex);
 	while(flags != CONNECTED_FLAG) {
 		pthread_cond_wait(&connect_cond, &connect_mutex);
 	}
-	std::cout << "Wait connected, flags: " << flags << std::endl; 
 	flags = EMPTY_FLAG;
 	pthread_mutex_unlock(&connect_mutex);
-	printf("Wait connect exit!\n");
 }
 
 void* SHMVAN::Receiving(void *args)
@@ -360,7 +353,6 @@ void* SHMVAN::Receiving(void *args)
 		while(flags != RECV_FLAG) {
 			pthread_cond_wait(&recv_cond, &recv_mutex);
 		}
-		printf("Will Receiving!\n");
 		cur_van->Receiving_(nodes, recovery_nodes);
 		flags = EMPTY_FLAG;
 		pthread_mutex_unlock(&recv_mutex);
@@ -462,43 +454,45 @@ void SHMVAN::Connect(const Node& node)
  		p = connect_buf[server_shm_node_id].second;
 		if(my_node_.id != p->client_info[shm_node_id].node_id && my_node_.id != Node::kEmpty) {
 			p->client_info[shm_node_id].node_id = my_node_.id;
-			
-			//notify server update new client_node.id
-			Notify(SIGCONNECT, p, shm_node_id);
-			WaitConnect();				//wait build connect;
 		}
-		
-		return;
-	} 
+
+		int server_id = (node.id != Node::kEmpty) ? node.id : node.init_id;
+		if(s_id_map.find(server_id) == s_id_map.end()) {
+			s_id_map[server_id] = server_shm_node_id;
+		}
+
+		//notify server update new client_node.id
+		Notify(SIGCONNECT, p, shm_node_id);
+		WaitConnect();				//wait build connect;
+	} else {
 	
-	server_key = ftok("/tmp", server_shm_node_id);
-	if(server_key == -1) {
-		perror("ftok fail!\n");
-		return;
+		server_key = ftok("/tmp", server_shm_node_id);
+		if(server_key == -1) {
+			perror("ftok fail!\n");
+			return;
+		}
+
+		server_shmid = shmget(server_key, sizeof(struct VanBuf), IPC_CREAT | 0777);
+		p = (struct VanBuf *)shmat(server_shmid, NULL, 0);
+		
+		while(p->flag != BIND_FLAGS);				//wait server LISTEN
+		p->client_info[shm_node_id].pid = pid;
+		p->client_info[shm_node_id].recving_threadid = recving_threadid;
+		p->client_info[shm_node_id].node_id = (my_node_.id != Node::kEmpty) ? my_node_.id : my_node_.init_id;
+		connect_buf[server_shm_node_id] = std::make_pair(server_shmid, p);
+		int server_id = (node.id != Node::kEmpty) ? node.id : node.init_id;
+		s_id_map[server_id] = server_shm_node_id;										//this node is client, record id map
+		
+		//send shm_node_id to server by sigqueue and build connect
+		Notify(SIGCONNECT, p, shm_node_id);
+		WaitConnect();				//wait build connect;
+		
+		CreateBufferFile(buffer_path, server_shm_node_id, shm_node_id);
+		r = RingbufferCreate(buffer_path, MB(64), ringbuffer_shmid, server_shm_node_id, false);
+		connect_server_ringbuffer[server_shm_node_id] = std::make_pair(ringbuffer_shmid, r);
+		unlink(buffer_path.c_str());
 	}
-
-	server_shmid = shmget(server_key, sizeof(struct VanBuf), IPC_CREAT | 0777);
-	p = (struct VanBuf *)shmat(server_shmid, NULL, 0);
-	printf("server_key: %d, server_shmid: %d\n", server_key, server_shmid);
-	while(p->flag != BIND_FLAGS);				//wait server LISTEN
-	p->client_info[shm_node_id].pid = pid;
-	p->client_info[shm_node_id].recving_threadid = recving_threadid;
-	p->client_info[shm_node_id].node_id = (my_node_.id != Node::kEmpty) ? my_node_.id : my_node_.init_id;
-	connect_buf[server_shm_node_id] = std::make_pair(server_shmid, p);
-	int server_id = (node.id != Node::kEmpty) ? node.id : node.init_id;
-	s_id_map[server_id] = server_shm_node_id;										//this node is client, record id map
-
-	printf("[Connect] %d will notify %d, node_id: %d, shm_node_id: %d\n", pid, p->pid, p->client_info[shm_node_id].node_id, shm_node_id);	
-	//send shm_node_id to server by sigqueue and build connect
-	Notify(SIGCONNECT, p, shm_node_id);
-	WaitConnect();				//wait build connect;
-	printf("[Connect] pause!\n");
-	CreateBufferFile(buffer_path, server_shm_node_id, shm_node_id);
-	r = RingbufferCreate(buffer_path, MB(64), ringbuffer_shmid, server_shm_node_id, false);
-	connect_server_ringbuffer[server_shm_node_id] = std::make_pair(ringbuffer_shmid, r);
-	unlink(buffer_path.c_str());
-
-	printf("Connected client %d <--> server %d\n", shm_node_id, server_shm_node_id);
+	printf("Connected client %d <--> server %d, client pid: %d, server pid: %d\n", my_node_.id, node.id, pid, p->pid);
 }
 
 void SHMVAN::Stop()
@@ -591,7 +585,7 @@ ssize_t SHMVAN::Send(const int node_id, const void *buf, size_t len, bool is_ser
 		l += _l;
 		len -= _l;
 	}
-	printf("Send: size %d bytes\n", l);	
+	
 	return l;
 }
 
@@ -685,7 +679,6 @@ int SHMVAN::SendMsg(const Message& msg) {
   	// find the socket
   	int id = msg.meta.recver;
   	CHECK_NE(id, Meta::kEmpty);
-	printf("SendMsg!\n");
 	bool is_server = (c_id_map.find(id) != c_id_map.end());
 	
   	int meta_size; char* meta_buf;
@@ -698,7 +691,7 @@ int SHMVAN::SendMsg(const Message& msg) {
 
 	int target_id, target_pid;
 	struct VanBuf *p;
-	printf("is_server: %d, recver: %d\n", is_server, id);
+
 	if(is_server) {
 		p = buf;
 		target_id = c_id_map[id];
@@ -714,7 +707,7 @@ int SHMVAN::SendMsg(const Message& msg) {
 	}
 
 	int my_node_id = (my_node_.id == Node::kEmpty) ? my_node_.init_id : my_node_.id;
-	printf("SendMsg: my node: %d, my mode shm: %d, target id: %d, target pid: %d\n", my_node_id, shm_node_id, target_id, target_pid);
+	
 	Notify(SIGRECV, p, my_node_id, is_server);
 	//send meta
 	while (true) {
@@ -723,7 +716,7 @@ int SHMVAN::SendMsg(const Message& msg) {
 		return -1;
 	}
 	delete meta_buf;
-	printf("Send meta success, size: %d, control cmd: %d, control node size: %d\n", meta_size, msg.meta.control.cmd, msg.meta.control.node.size());
+	
   	int send_bytes = meta_size;
 
 	// send data
@@ -738,8 +731,11 @@ int SHMVAN::SendMsg(const Message& msg) {
 		}
 	
 		send_bytes += data_size;
-  }
-  return send_bytes;
+  	}
+
+	printf("SendMsg success, sender: %d, recver: %d, is_server: %d, msg size: %d, \n", my_node_.id, id, is_server, send_bytes);
+
+  	return send_bytes;
 }
 
 //Recv msg, priority client to recv data
@@ -762,10 +758,12 @@ int SHMVAN::RecvMsg(Message* msg)
 		recv_bytes = buf->client_info[target_id].recv_size;
 		meta_size = buf->client_info[target_id].meta_size;
 	}
-
-	printf("RecvMsg is_client: %d, my shm node: %d, target_shm_id: %d\n", is_client, shm_node_id, target_id);
+	
 	msg->meta.sender = (sender == target_id + ID_OFFSET) ? Meta::kEmpty : sender;			//sender == target_id + 10000 is in init stage, node don't have global ID
-    	msg->meta.recver = my_node_.id;
+    msg->meta.recver = my_node_.id;
+
+	printf("Will recv msg, sender: %d, recver: %d, is_client: %d, will recv size: %d\n", 
+		msg->meta.sender, msg->meta.recver, is_client, recv_bytes);
 
 	char *meta_buf = (char *)malloc(meta_size);
 	
@@ -779,16 +777,16 @@ int SHMVAN::RecvMsg(Message* msg)
 	UnpackMeta(meta_buf, meta_size, &(msg->meta));
 	free(meta_buf);
 	
-	printf("Receive meta success, size: %d, control cmd is: %d, control node size: %d\n", recv_counts, msg->meta.control.cmd, msg->meta.control.node.size());
 	char *recv_buf = (char *)malloc(recv_bytes);
-	recv_counts = Recv(target_id, recv_buf, recv_bytes, (!is_client));
-	if(recv_counts != recv_bytes) {
+	recv_counts += Recv(target_id, recv_buf, recv_bytes, (!is_client));
+	if(recv_counts != recv_bytes + meta_size) {
 		printf("Recv data fail!\n");
 		free(recv_buf);
 		return -1;
 	}
 
-	return (recv_counts + meta_size);
+	printf("RecvMsg success! Recv size: %d\n", recv_counts);
+	return recv_counts;
 }
 
 }
