@@ -248,7 +248,7 @@ void Van::ProcessAddNodeCommand(Message* msg, Meta* nodes,
   auto& ctrl = msg->meta.control;
 
   UpdateLocalID(msg, &dead_set, nodes, recovery_nodes);
-  printf("[%s] is_scheduler_: %d\n", __FUNCTION__, is_scheduler_);
+  
   if (is_scheduler_) {
     ProcessAddNodeCommandAtScheduler(msg, nodes, recovery_nodes);
   } else {
@@ -588,7 +588,6 @@ void Van::Receiving_(Meta& nodes, Meta& recovery_nodes)
 {
     Message msg;
     int recv_bytes = RecvMsg(&msg);
-    printf("Van::Receiving_ RecvMsg success, size: %d\n", recv_bytes);
     // For debug, drop received message
     if (ready_.load() && drop_rate_ > 0) {
       unsigned seed = time(NULL) + my_node_.id;
@@ -609,7 +608,7 @@ void Van::Receiving_(Meta& nodes, Meta& recovery_nodes)
     if (!msg.meta.control.empty()) {
       // control msg
       auto& ctrl = msg.meta.control;
-      printf("[%s] ctrl.cmd: %d\n", __FUNCTION__, ctrl.cmd);
+      printf("[%s] % recv msg: %d, ctrl.cmd: %d, from %d\n", __FUNCTION__, msg.meta.recver, ctrl.cmd, msg.meta.sender);
       if (ctrl.cmd == Control::TERMINATE) {
         ProcessTerminateCommand();
       } else if (ctrl.cmd == Control::ADD_NODE) {

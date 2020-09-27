@@ -266,7 +266,6 @@ void SHMVAN::SignalRecv()
 {
 	sender = buf->connector;
 	sender_identity = buf->sender_identity;
-	printf("SignalRecv sender: %d, sender_identity: %d\n", sender, sender_identity);
 	pthread_spin_unlock(&buf->lock);
 	
 	pthread_mutex_lock(&recv_mutex);
@@ -709,7 +708,6 @@ int SHMVAN::SendMsg(const Message& msg) {
 		p->client_info[target_id].meta_size = meta_size;
 	} else {
 		target_id = s_id_map[id];
-		printf("SendMsg target_id: %d, my_node id: %d\n", target_id, my_node_.id);
 		p = connect_buf[target_id].second;
 		target_pid = p->pid;
 		p->client_info[shm_node_id].recv_size = size;
@@ -755,12 +753,10 @@ int SHMVAN::RecvMsg(Message* msg)
 	struct VanBuf *p;
 	size_t recv_bytes = 0, meta_size, recv_counts;
 	msg->data.clear();
-	printf("RecvMsg, pid: %d\n", pid);
-//	bool is_client = (s_id_map.find(sender) != s_id_map.end());
+
 	bool is_client = sender_identity;		//if sender is server, this is client
 	if(is_client) {
 		target_id = s_id_map[sender];
-		printf("RecvMsg sender: %d, target_id: %d", sender, target_id);
 		p = connect_buf[target_id].second;
 		recv_bytes = p->client_info[shm_node_id].recv_size;
 		meta_size = p->client_info[shm_node_id].meta_size;
@@ -774,7 +770,7 @@ int SHMVAN::RecvMsg(Message* msg)
     msg->meta.recver = my_node_.id;
 
 	printf("Will recv msg, sender: %d, recver: %d, is_client: %d, will recv size: %ld\n", 
-		msg->meta.sender, msg->meta.recver, is_client, recv_bytes+meta_size);
+	msg->meta.sender, msg->meta.recver, is_client, recv_bytes+meta_size);
 
 	char *meta_buf = (char *)malloc(meta_size);
 	
@@ -796,7 +792,7 @@ int SHMVAN::RecvMsg(Message* msg)
 		return -1;
 	}
 
-	printf("RecvMsg success! Recv size: %ld\n", recv_counts);
+	printf("%d recv %ld bytes from %d success!\n",  msg->meta.recver, recv_counts, msg->meta.sender);
 	return recv_counts;
 }
 
