@@ -20,6 +20,7 @@
 #define SIGCONNECTED	(SIGCONNECT+1)
 #define SIGSEND			(SIGCONNECT+2)
 #define SIGRECV			(SIGCONNECT+3)
+#define SIGTERMINATE	(SIGCONNECT+4)
 
 #define BIND_FLAGS	0x12345678
 
@@ -357,7 +358,10 @@ void* SHMVAN::Receiving(void *args)
 		cur_van->Receiving_(nodes, recovery_nodes);
 		flags = EMPTY_FLAG;
 		pthread_mutex_unlock(&recv_mutex);
-//		if(!cur_van->IsReady()) break;
+		if(!cur_van->IsReady() && cur_van->init) {
+			kill(pid, SIGTERMINATE);
+			break;
+		}
 	}
 
 	return NULL;
@@ -371,6 +375,7 @@ void* SHMVAN::SignalThread(void *args)
 	while(1) {
 		s = sigwait(set, &sig);
 		if(s == 0) {
+			if(sig == SIGCONNECT) break;
 			SignalHandle(sig);
 		} else {
 			printf("sigwait returned err: %d; %s\n", errno, strerror(errno));
@@ -402,6 +407,8 @@ void SHMVAN::Start(int customer_id)
 	pthread_create(&signal_tid, NULL, SignalThread, (void *)&mask);
 	
 	Van::Start(customer_id);
+
+	init = true;
 }
 
 int SHMVAN::Bind(const Node& node, int max_retry)
@@ -514,6 +521,7 @@ void SHMVAN::Stop()
 	connect_buf.clear();
 	connect_server_ringbuffer.clear();
 	connect_client_ringbuffer.clear();
+	init = false;
 }
 
 ssize_t SHMVAN::Recv(const int node_id, void *buf, size_t len, bool is_server)

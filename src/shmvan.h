@@ -84,6 +84,7 @@ private:
 	unsigned int connect_num;
 	int sender;
 	bool sender_identity;
+	bool init = false;
 	VanBuf *buf;
 	static SHMVAN *cur_van;
 	
