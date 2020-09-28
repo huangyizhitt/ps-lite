@@ -53,6 +53,8 @@ public:
 	virtual int SendMsg(const Message &msg);
 	int GetConnectNum() const {return connect_num;}
 
+	int RecvMsg1(Message *msg);
+	int SendMsg1(const Message &msg);
 	ssize_t Recv(const int node_id, void *buf, size_t len, bool is_server);
 	ssize_t Send(const int node_id, const void *buf, size_t len, bool is_server);
 	void Broadcast(const void *buf, size_t len, bool is_server);

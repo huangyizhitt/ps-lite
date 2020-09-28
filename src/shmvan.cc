@@ -705,7 +705,7 @@ int SHMVAN::SendMsg(const Message& msg) {
 		p->client_info[shm_node_id].recv_size[i] = size_;
 		size += size_;
 	}
-	p->client_info[shm_node_id].total_recv_size = size;
+	p->client_info[shm_node_id].total_recv_size = size+meta_size;
 
 	int my_node_id = (my_node_.id == Node::kEmpty) ? my_node_.init_id : my_node_.id;
 	bool is_server = false;	
@@ -724,9 +724,9 @@ int SHMVAN::SendMsg(const Message& msg) {
   	for (int i = 0; i < n; ++i) {
 		SArray<char>* data = new SArray<char>(msg.data[i]);
 		int data_size = data->size();
-		
+		char *data_buf = data->data();
 		while (true) {
-	  		if (Send(target_id, data, data_size, is_server) == data_size) break;
+	  		if (Send(target_id, data_buf, data_size, is_server) == data_size) break;
 	  		printf("WARNING failed to send meta data to node: %d, send size: %d\n", id, data_size);
 	  		return -1;
 		}
@@ -768,13 +768,13 @@ int SHMVAN::SendMsg1(const Message& msg) {
 		p = buf;
 		target_id = c_id_map[id];
 		target_pid = buf->client_info[target_id].pid;
-		p->client_info[target_id].recv_size = size;
+	//	p->client_info[target_id].recv_size = size;
 		p->client_info[target_id].meta_size = meta_size;
 	} else {
 		target_id = s_id_map[id];
 		p = connect_buf[target_id].second;
 		target_pid = p->pid;
-		p->client_info[shm_node_id].recv_size = size;
+	//	p->client_info[shm_node_id].recv_size = size;
 		p->client_info[shm_node_id].meta_size = meta_size;
 	}
 
@@ -795,9 +795,9 @@ int SHMVAN::SendMsg1(const Message& msg) {
   	for (int i = 0; i < n; ++i) {
 		SArray<char>* data = new SArray<char>(msg.data[i]);
 		int data_size = data->size();
-		
+		char *data_buf = data->data();	
 		while (true) {
-	  		if (Send(target_id, data, data_size, is_server) == data_size) break;
+	  		if (Send(target_id, data_buf, data_size, is_server) == data_size) break;
 	  		printf("WARNING failed to send meta data to node: %d, send size: %d\n", id, data_size);
 	  		return -1;
 		}
@@ -847,6 +847,7 @@ int SHMVAN::RecvMsg(Message* msg)
 		for(int i = 0; i < recv_counts; i++) {
 			int data_size = buf->client_info[target_id].recv_size[i];
 			char *data_buf = (char *)malloc(data_size);
+		
 			l = Recv(target_id, data_buf, data_size, (!is_client));
 			if(l != data_size) {
 				printf("Recv data fail!\n");
@@ -875,11 +876,11 @@ int SHMVAN::RecvMsg1(Message* msg)
 	if(is_client) {
 		target_id = s_id_map[sender];
 		p = connect_buf[target_id].second;
-		recv_bytes = p->client_info[shm_node_id].recv_size;
+//		recv_bytes = p->client_info[shm_node_id].recv_size;
 		meta_size = p->client_info[shm_node_id].meta_size;
 	} else {
 		target_id = c_id_map[sender];
-		recv_bytes = buf->client_info[target_id].recv_size;
+//		recv_bytes = buf->client_info[target_id].recv_size;
 		meta_size = buf->client_info[target_id].meta_size;
 	}
 	
