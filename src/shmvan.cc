@@ -149,6 +149,7 @@ static struct RingBuffer *RingbufferCreate(std::string& buffer_path, unsigned in
 static void RingBufferDestroy(struct RingBuffer *ring_buffer, int shmid)
 {
 	if(!ring_buffer) return;
+	pthread_spin_destroy(&ring_buffer->lock);
 	shmdt(ring_buffer);
 	shmctl(shmid, IPC_RMID, NULL);
 }
@@ -306,7 +307,7 @@ void SHMVAN::SetCurVan()
 
 void SHMVAN::SetConnectRingbuffer(int client_shm_node_id)
 {
-	int ringbuffer_key, ringbuffer_shmid;
+	int ringbuffer_shmid;
 	struct RingBuffer *r;
 	std::string buffer_path;
 
@@ -359,11 +360,11 @@ void* SHMVAN::Receiving(void *args)
 		flags = EMPTY_FLAG;
 		pthread_mutex_unlock(&recv_mutex);
 		if(!cur_van->IsReady() && cur_van->init) {
-			kill(pid, SIGTERMINATE);
+			kill(cur_van->pid, SIGTERMINATE);
 			break;
 		}
 	}
-
+	printf("Stop Receiving\n");
 	return NULL;
 }
 
@@ -375,13 +376,13 @@ void* SHMVAN::SignalThread(void *args)
 	while(1) {
 		s = sigwait(set, &sig);
 		if(s == 0) {
-			if(sig == SIGCONNECT) break;
+			if(sig == SIGTERMINATE) break;
 			SignalHandle(sig);
 		} else {
 			printf("sigwait returned err: %d; %s\n", errno, strerror(errno));
 		}
 	}
-
+	printf("Stop SignalThread\n");
 	return NULL;
 }
 
@@ -396,6 +397,7 @@ void SHMVAN::Start(int customer_id)
 	sigaddset(&mask, SIGCONNECTED);
 	sigaddset(&mask, SIGSEND);
 	sigaddset(&mask, SIGRECV);
+	sigaddset(&mask, SIGTERMINATE);
 
 	pthread_sigmask(SIG_BLOCK, &mask, NULL);	
 	
@@ -443,7 +445,7 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 void SHMVAN::Connect(const Node& node) 
 {
     CHECK_NE(node.port, node.kEmpty);
-	int server_key, server_shmid, ringbuffer_key, ringbuffer_shmid;
+	int server_key, server_shmid, ringbuffer_shmid;
 	struct VanBuf *p;
 	struct RingBuffer *r;
 	std::string buffer_path;
@@ -490,7 +492,7 @@ void SHMVAN::Connect(const Node& node)
 		WaitConnect();				//wait build connect;
 		
 		CreateBufferFile(buffer_path, server_shm_node_id, shm_node_id);
-		r = RingbufferCreate(buffer_path, MB(64), ringbuffer_shmid, server_shm_node_id, false);
+		r = RingbufferCreate(buffer_path, MB(16), ringbuffer_shmid, server_shm_node_id, false);
 		connect_server_ringbuffer[server_shm_node_id] = std::make_pair(ringbuffer_shmid, r);
 		unlink(buffer_path.c_str());
 	}
@@ -515,6 +517,7 @@ void SHMVAN::Stop()
 	}
 
 	//delete self buf
+	pthread_spin_destroy(&buf->lock);
 	shmdt(buf);
 	shmctl(shmid, IPC_RMID, NULL);
 	
@@ -805,7 +808,6 @@ int SHMVAN::SendMsg1(const Message& msg) {
 int SHMVAN::RecvMsg(Message* msg) 
 {
 	int target_id;
-	struct VanBuf *p;
 	size_t recv_bytes = 0, meta_size, recv_counts, len, l;
 	msg->data.clear();
 
@@ -832,8 +834,8 @@ int SHMVAN::RecvMsg(Message* msg)
 	free(meta_buf);
 
 	if(recv_bytes > 0) {	
-		for(int i = 0; i < recv_counts; i++) {
-			int data_size = buf->client_info[target_id].recv_size[i];
+		for(size_t i = 0; i < recv_counts; i++) {
+			size_t data_size = buf->client_info[target_id].recv_size[i];
 			char *data_buf = (char *)malloc(data_size);
 		
 			l = Recv(target_id, data_buf, data_size, (!is_client));
