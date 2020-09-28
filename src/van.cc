@@ -608,7 +608,7 @@ void Van::Receiving_(Meta& nodes, Meta& recovery_nodes)
     if (!msg.meta.control.empty()) {
       // control msg
       auto& ctrl = msg.meta.control;
-      printf("[%s] %d recv msg, ctrl.cmd: %d, from %d, size: %d\n", __FUNCTION__, msg.meta.recver, ctrl.cmd, msg.meta.sender, recv_bytes);
+      
       if (ctrl.cmd == Control::TERMINATE) {
         ProcessTerminateCommand();
       } else if (ctrl.cmd == Control::ADD_NODE) {
@@ -624,6 +624,5 @@ void Van::Receiving_(Meta& nodes, Meta& recovery_nodes)
       ProcessDataMsg(&msg);
     }
 
-    printf("Van::Receiving_ %d process data success!\n", my_node_.id);
 }
 }  // namespace ps

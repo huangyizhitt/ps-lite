@@ -400,7 +400,7 @@ void SHMVAN::Start(int customer_id)
 	pthread_mutex_init(&connect_mutex, NULL);
 	pthread_create(&recv_tid, NULL, Receiving, NULL);
 	pthread_create(&signal_tid, NULL, SignalThread, (void *)&mask);
-	printf("Will begin start!\n");
+	
 	Van::Start(customer_id);
 }
 
@@ -430,7 +430,6 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 
 	pthread_spin_init(&buf->lock, PTHREAD_PROCESS_SHARED);
 	
-	printf("Bind success, pid: %d, node id: %d, node shm id: %d\n", pid, node.id, shm_node_id);
 	return port;
 }
 
@@ -442,11 +441,6 @@ void SHMVAN::Connect(const Node& node)
 	struct RingBuffer *r;
 	std::string buffer_path;
 	int server_shm_node_id = node.shm_id;
-
-/*	if(shm_node_id == server_shm_node_id) {
-		printf("Connect self is not nessecery!\n");
-		return;
-	}*/
 
 	if(connect_buf.find(server_shm_node_id) != connect_buf.end()) {
 		printf("The client %d has connected server %d!\n", my_node_.id, node.id);
@@ -493,8 +487,6 @@ void SHMVAN::Connect(const Node& node)
 		connect_server_ringbuffer[server_shm_node_id] = std::make_pair(ringbuffer_shmid, r);
 		unlink(buffer_path.c_str());
 	}
-	printf("Connected client %d <--> server %d, client pid: %d, server pid: %d, client_shm_id: %d, server_shm_id: %d\n", 
-			my_node_.id, node.id, pid, p->pid, shm_node_id, server_shm_node_id);
 }
 
 void SHMVAN::Stop()
@@ -734,8 +726,6 @@ int SHMVAN::SendMsg(const Message& msg) {
 		send_bytes += data_size;
   	}
 
-	printf("SendMsg success, sender: %d, recver: %d, is_server: %d, msg size: %d, \n", my_node_.id, id, is_server, send_bytes);
-
   	return send_bytes;
 }
 
@@ -745,13 +735,8 @@ int SHMVAN::SendMsg1(const Message& msg) {
   	// find the socket
   	int id = msg.meta.recver;
   	CHECK_NE(id, Meta::kEmpty);
-//	bool is_server = (c_id_map.find(id) != c_id_map.end());
-  	bool is_server = false;
 
-/*	if(id == my_node_.id) {
-		printf("Send myself!\n");
-		return 0;
-	}*/
+  	bool is_server = false;
 
 	int meta_size; char* meta_buf;
   	PackMeta(msg.meta, &meta_buf, &meta_size);
@@ -805,8 +790,6 @@ int SHMVAN::SendMsg1(const Message& msg) {
 		send_bytes += data_size;
   	}
 
-	printf("SendMsg success, sender: %d, recver: %d, is_server: %d, msg size: %d, \n", my_node_.id, id, is_server, send_bytes);
-
   	return send_bytes;
 }
 
@@ -827,9 +810,6 @@ int SHMVAN::RecvMsg(Message* msg)
 	
 	msg->meta.sender = (sender == target_id + ID_OFFSET) ? Meta::kEmpty : sender;			//sender == target_id + 10000 is in init stage, node don't have global ID
     msg->meta.recver = my_node_.id;
-
-	printf("Will recv msg, sender: %d, recver: %d, is_client: %d, will recv size: %ld\n", 
-	msg->meta.sender, msg->meta.recver, is_client, recv_bytes);
 
 	char *meta_buf = (char *)malloc(meta_size);
 	
@@ -860,7 +840,7 @@ int SHMVAN::RecvMsg(Message* msg)
 			len += l;
 		}
 	}
-	printf("%d recv %ld bytes from %d success!\n",  msg->meta.recver, len, msg->meta.sender);
+	
 	return len;
 }
 
@@ -887,9 +867,6 @@ int SHMVAN::RecvMsg1(Message* msg)
 	msg->meta.sender = (sender == target_id + ID_OFFSET) ? Meta::kEmpty : sender;			//sender == target_id + 10000 is in init stage, node don't have global ID
     msg->meta.recver = my_node_.id;
 
-	printf("Will recv msg, sender: %d, recver: %d, is_client: %d, will recv size: %ld\n", 
-	msg->meta.sender, msg->meta.recver, is_client, recv_bytes+meta_size);
-
 	char *meta_buf = (char *)malloc(meta_size);
 	
 	recv_counts = Recv(target_id, meta_buf, meta_size, (!is_client));
@@ -914,7 +891,7 @@ int SHMVAN::RecvMsg1(Message* msg)
 		data.reset(recv_buf, recv_bytes, [](char *recv_buf){free(recv_buf);});
 		msg->data.push_back(data);
 	}
-	printf("%d recv %ld bytes from %d success!\n",  msg->meta.recver, recv_counts, msg->meta.sender);
+	
 	return recv_counts;
 }
 
