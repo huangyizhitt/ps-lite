@@ -21,9 +21,11 @@ struct RingBuffer {
 struct ChildInfo {
 	int pid;
 	int recving_threadid;
-	int recv_size;
 	int meta_size;
 	int node_id;
+	int total_recv_size;			//total data size: data size + meta size
+	int recv_counts;				//data count
+	int recv_size[1024];			//data[0] + data[1] + ... + data[recv_counts];
 };
 
 //all node create a van buf in Bind, record this node info and client info connected this nod

@@ -675,9 +675,73 @@ void SHMVAN::UnpackMeta(const char* meta_buf, int buf_size, Meta* meta) {
   	}
 }
 
+//client act sender
+int SHMVAN::SendMsg(const Message& msg) {
+  	// find the socket
+  	int id = msg.meta.recver;
+  	CHECK_NE(id, Meta::kEmpty);
+
+	int target_id, target_pid;
+	struct VanBuf *p;
+
+	target_id = s_id_map[id];
+	p = connect_buf[target_id].second;
+	target_pid = p->pid;
+
+	int meta_size; char* meta_buf;
+  	PackMeta(msg.meta, &meta_buf, &meta_size);
+	int size = 0, size_;
+	int n = msg.data.size();
+	if(n > 1024) {
+		printf("Send limit exceeded");
+		return -1;
+	}
+	
+	p->client_info[shm_node_id].meta_size = meta_size;
+	p->client_info[shm_node_id].recv_counts = n;
+
+	for(int i = 0; i < n; i++) {
+		size_ = msg.data[i].size();
+		p->client_info[shm_node_id].recv_size[i] = size_;
+		size += size_;
+	}
+	p->client_info[shm_node_id].total_recv_size = size;
+
+	int my_node_id = (my_node_.id == Node::kEmpty) ? my_node_.init_id : my_node_.id;
+	bool is_server = false;	
+	Notify(SIGRECV, target_pid, p, my_node_id, is_server);
+	//send meta
+	while (true) {
+		if (Send(target_id, meta_buf, meta_size, is_server) == meta_size) break;
+		printf("WARNING failed to send meta data to node: %d, send size: %d\n", id, meta_size);
+		return -1;
+	}
+	delete meta_buf;
+	
+  	int send_bytes = meta_size;
+
+	// send data
+  	for (int i = 0; i < n; ++i) {
+		SArray<char>* data = new SArray<char>(msg.data[i]);
+		int data_size = data->size();
+		
+		while (true) {
+	  		if (Send(target_id, data, data_size, is_server) == data_size) break;
+	  		printf("WARNING failed to send meta data to node: %d, send size: %d\n", id, data_size);
+	  		return -1;
+		}
+	
+		send_bytes += data_size;
+  	}
+
+	printf("SendMsg success, sender: %d, recver: %d, is_server: %d, msg size: %d, \n", my_node_.id, id, is_server, send_bytes);
+
+  	return send_bytes;
+}
+
 
 //Send msg, priority server to send data
-int SHMVAN::SendMsg(const Message& msg) {
+int SHMVAN::SendMsg1(const Message& msg) {
   	// find the socket
   	int id = msg.meta.recver;
   	CHECK_NE(id, Meta::kEmpty);
@@ -746,8 +810,61 @@ int SHMVAN::SendMsg(const Message& msg) {
   	return send_bytes;
 }
 
-//Recv msg, priority client to recv data
+//recver must be server
 int SHMVAN::RecvMsg(Message* msg) 
+{
+	int target_id;
+	struct VanBuf *p;
+	size_t recv_bytes = 0, meta_size, recv_counts, len, l;
+	msg->data.clear();
+
+	bool is_client = false;
+	
+	target_id = c_id_map[sender];
+	recv_bytes = buf->client_info[target_id].total_recv_size;
+	meta_size = buf->client_info[target_id].meta_size;
+	recv_counts = buf->client_info[target_id].recv_counts;
+	
+	msg->meta.sender = (sender == target_id + ID_OFFSET) ? Meta::kEmpty : sender;			//sender == target_id + 10000 is in init stage, node don't have global ID
+    msg->meta.recver = my_node_.id;
+
+	printf("Will recv msg, sender: %d, recver: %d, is_client: %d, will recv size: %ld\n", 
+	msg->meta.sender, msg->meta.recver, is_client, recv_bytes);
+
+	char *meta_buf = (char *)malloc(meta_size);
+	
+	len = Recv(target_id, meta_buf, meta_size, (!is_client));
+	if(len != meta_size) {
+		printf("Recv meta data fail!\n");
+		free(meta_buf);
+		return -1;
+	}
+
+	UnpackMeta(meta_buf, meta_size, &(msg->meta));
+	free(meta_buf);
+
+	if(recv_bytes > 0) {	
+		for(int i = 0; i < recv_counts; i++) {
+			int data_size = buf->client_info[target_id].recv_size[i];
+			char *data_buf = (char *)malloc(data_size);
+			l = Recv(target_id, data_buf, data_size, (!is_client));
+			if(l != data_size) {
+				printf("Recv data fail!\n");
+				free(data_buf);
+				return -1;
+			}
+			SArray<char> data;
+			data.reset(data_buf, data_size, [](char *data_buf){free(data_buf);});
+			msg->data.push_back(data);
+			len += l;
+		}
+	}
+	printf("%d recv %ld bytes from %d success!\n",  msg->meta.recver, len, msg->meta.sender);
+	return len;
+}
+
+//Recv msg, priority client to recv data
+int SHMVAN::RecvMsg1(Message* msg) 
 {
 	int target_id;
 	struct VanBuf *p;
