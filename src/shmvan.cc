@@ -11,7 +11,7 @@
 #include <signal.h>
 #include <atomic>
 #include <errno.h>
-
+#include <sys/time.h>
 #include "shmvan.h"
 #include "./meta.pb.h"
 #include "ps/internal/van.h"
@@ -349,7 +349,7 @@ void* SHMVAN::Receiving(void *args)
 	Meta nodes;
 	Meta recovery_nodes;
 	recovery_nodes.control.cmd = Control::ADD_NODE;
-
+	double time;
 	while(true) {
 		pthread_mutex_lock(&recv_mutex);
 		//protected sprious wakeup in multicore system
@@ -359,6 +359,8 @@ void* SHMVAN::Receiving(void *args)
 		cur_van->Receiving_(nodes, recovery_nodes);
 		flags = EMPTY_FLAG;
 		pthread_mutex_unlock(&recv_mutex);
+		time = cur_van->cpu_second();
+		printf("Receiving will begin, time: %.3f\n", time);
 		if(!cur_van->IsReady() && cur_van->init) {
 			kill(cur_van->pid, SIGTERMINATE);
 			break;
@@ -683,7 +685,9 @@ int SHMVAN::SendMsg(const Message& msg) {
   	// find the socket
   	int id = msg.meta.recver;
   	CHECK_NE(id, Meta::kEmpty);
-
+	
+	double time = cpu_second();	
+	printf("[%d->%d] Start: %.3f\n", my_node_.id, id, time);
 	int target_id, target_pid;
 	struct VanBuf *p;
 
@@ -712,6 +716,7 @@ int SHMVAN::SendMsg(const Message& msg) {
 
 	int my_node_id = (my_node_.id == Node::kEmpty) ? my_node_.init_id : my_node_.id;
 	bool is_server = false;	
+	
 	Notify(SIGRECV, target_pid, p, my_node_id, is_server);
 	//send meta
 	while (true) {
@@ -804,15 +809,26 @@ int SHMVAN::SendMsg1(const Message& msg) {
   	return send_bytes;
 }
 
+double SHMVAN::cpu_second(void)
+{
+	struct timeval tv;
+    double t;
+
+    gettimeofday(&tv, nullptr);
+    t = tv.tv_sec + ((double)tv.tv_usec)/1000000;
+    return t;
+}
+
 //recver must be server
 int SHMVAN::RecvMsg(Message* msg) 
 {
 	int target_id;
 	size_t recv_bytes = 0, meta_size, recv_counts, len, l;
 	msg->data.clear();
-
+	double start, elapse;
 	bool is_client = false;
 	
+	start = cpu_second();
 	target_id = c_id_map[sender];
 	recv_bytes = buf->client_info[target_id].total_recv_size;
 	meta_size = buf->client_info[target_id].meta_size;
@@ -851,6 +867,10 @@ int SHMVAN::RecvMsg(Message* msg)
 		}
 	}
 	
+	elapse = cpu_second() - start;
+
+	printf("[%s] times: %.3f, recv size: %ld, bandwidth: %.3fGB/s\n", __FUNCTION__, elapse, len, len / (elapse*1024*1024*1024));
+
 	return len;
 }
 

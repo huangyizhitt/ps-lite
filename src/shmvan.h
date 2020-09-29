@@ -76,6 +76,7 @@ private:
 	void SignalRecv();
 	void SignalConnected();
 	void WaitConnect();
+	double cpu_second();
 
 	int shmid;
 	int pid;

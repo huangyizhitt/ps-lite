@@ -6,10 +6,21 @@
 #include <zmq.h>
 #include <string>
 #include <unordered_map>
+#include <sys/time.h>
 #include "ps/internal/van.h"
 #include "zmq_van.h"
 
 namespace ps {
+
+double cpu_second(void)
+{
+	struct timeval tv;
+    double t;
+
+    gettimeofday(&tv, nullptr);
+    t = tv.tv_sec + ((double)tv.tv_usec)/1000000;
+    return t;
+}
 
 class ZMQIPCVan : public Van {
 	
@@ -153,7 +164,9 @@ protected:
 	}	
 
 	int RecvMsg(Message* msg) override {
-    	msg->data.clear();
+    	double start, elapse;
+	start = cpu_second();
+	msg->data.clear();
     	size_t recv_bytes = 0;
     	for (int i = 0; ; ++i) {
      		zmq_msg_t* zmsg = new zmq_msg_t;
@@ -199,6 +212,8 @@ protected:
         		}
       		}	
     	}
+	elapse = cpu_second() - start;
+	printf("[%s] time: %.3f, recv size: %ld, bandwidth: %.3fGB/s\n", __FUNCTION__, elapse, recv_bytes, recv_bytes/(elapse*1024*1024*1024));
     	return recv_bytes;
   }
 
