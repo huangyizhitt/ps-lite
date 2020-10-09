@@ -26,6 +26,8 @@ namespace ps {
 
 #define TRANSFER_SIZE	(1 << 20)
 
+#define BIND_FLAG		0x01234567
+
 #define is_power_of_2(x) ((x) != 0 && (((x) & ((x) - 1)) == 0))
 #define min(x,y) ({ typeof(x) _x = (x); typeof(y) _y = (y); (void) (&_x == &_y); _x < _y ? _x : _y; })
 #define max(x,y) ({ typeof(x) _x = (x); typeof(y) _y = (y); (void) (&_x == &_y); _x > _y ? _x : _y; })
@@ -209,7 +211,7 @@ void SHMVAN::SignalConnect(siginfo_t *info)
 	pid_t sender_pid = info->si_pid;
 	std::string buf_path;
 	int shmid;
-
+	printf("[%s]my pid: %d, sender pid: %d", __FUNCTION__, pid, sender_pid);
 	CreateBufferFile(buf_path, sender_pid, pid);
 	struct VanBuf *buf = VanBufCreate(buf_path, shmid);
 
@@ -302,7 +304,6 @@ void SHMVAN::WaitConnected(struct VanBuf *buf)
 void SHMVAN::Start(int customer_id)
 {
 	pid = getpid();
-	my_node_.pid = pid;
 	SetCurVan();
 
 	sigemptyset(&mask);
@@ -321,7 +322,35 @@ void SHMVAN::Start(int customer_id)
 int SHMVAN::Bind(const Node& node, int max_retry)
 {
 	int port = node.port;
-	printf("Bind Success");
+	std::string& ip = node.hostname;
+	std::string ip_tail = ip.substr(ip.length() - 3, ip.length());
+	int id = atoi(ip_tail.c_str());
+	
+
+	printf("Bind id is %d\n", id);
+	
+	int key = ftok("/tmp", id);
+	if(key == -1) {
+        perror("ftok fail!\n");
+        return -1;
+	}
+
+	pid_shmid = shmget(key, sizeof(struct PIDBuf), IPC_CREAT | 0777);
+	if(pid_shmid == -1) {
+		perror("shmget fail!\n");
+		return -1;
+	}
+
+	pid_shm = (struct PIDBuf *)shmat(pid_shmid, NULL, 0);
+	if(!pid_shm) {
+		perror("shmat fail!\n");
+		return -1;
+	}
+
+	pid_shm->bind_flag = BIND_FLAG;
+	pid_shm->pid = pid;
+	
+	printf("Bind Success\n");
 	return port;
 }
 
@@ -331,7 +360,31 @@ void SHMVAN::Connect(const Node& node)
     CHECK_NE(node.port, node.kEmpty);
 
 	int id = node.id;
-	int node_pid = node.pid;
+
+	std::string& ip = node.hostname;
+	std::string ip_tail = ip.substr(ip.length() - 3, ip.length());
+
+	int key = ftok("/tmp", atoi(ip_tail.c_str()));
+	if(key == -1) {
+        perror("ftok fail!\n");
+        return -1;
+	}
+
+	int shmid = shmget(key, sizeof(struct PIDBuf), IPC_CREAT | 0777);
+	if(shmid == -1) {
+		perror("shmget fail!\n");
+		return -1;
+	}
+
+	struct PIDBuf *pid_buf = (struct PIDBuf *)shmat(shmid, NULL, 0);
+	if(!pid_buf) {
+		perror("shmat fail!\n");
+		return -1;
+	}
+
+	while(pid_buf->bind_flag != BIND_FLAG);
+
+	int node_pid = pid_buf->pid;
 
 	if(recver_pid.find(id) == recver_pid.end()) {
 		recver_pid[id] = node_pid;
@@ -355,6 +408,7 @@ void SHMVAN::Connect(const Node& node)
 			printf("VanBuf create fail!\n");
 		}
 
+		printf("[%s] my pid: %d, target pid: %d\n", __FUNCTION__, pid, node_pid);
 		Notify(SIGCONNECT, node_pid);
 		WaitConnected(buf);
 	}
@@ -370,6 +424,9 @@ void SHMVAN::Stop()
 	for(const auto& n : sender) {
 		VanBufDestroy(n.second.first, n.second.second);
 	}
+
+	shmdt(pid_shm);
+	shmctl(pid_shmid, IPC_RMID, NULL);
 	
 	recver.clear();
 	recver_pid.clear();
@@ -423,89 +480,6 @@ ssize_t SHMVAN::Send(struct RingBuffer *ring_buffer, const void *buf, size_t len
 	
 	return l;
 }
-
-void SHMVAN::PackMeta(const Meta& meta, char **meta_buf, int* buf_size) {
-  	// convert into protobuf
-	PBMeta pb;
-	pb.set_head(meta.head);
-	if (meta.app_id != Meta::kEmpty) pb.set_app_id(meta.app_id);
-	if (meta.timestamp != Meta::kEmpty) pb.set_timestamp(meta.timestamp);
-	if (meta.body.size()) pb.set_body(meta.body);
-	pb.set_push(meta.push);
-	pb.set_pull(meta.pull);
-	pb.set_request(meta.request);
-	pb.set_simple_app(meta.simple_app);
-	pb.set_priority(meta.priority);
-	pb.set_customer_id(meta.customer_id);
-	for (auto d : meta.data_type) pb.add_data_type(d);
-	if (!meta.control.empty()) {
-		auto ctrl = pb.mutable_control();
-		ctrl->set_cmd(meta.control.cmd);
-	if (meta.control.cmd == Control::BARRIER) {
-	  		ctrl->set_barrier_group(meta.control.barrier_group);
-		} else if (meta.control.cmd == Control::ACK) {
-	  		ctrl->set_msg_sig(meta.control.msg_sig);
-		}
-		for (const auto& n : meta.control.node) {
-		  	auto p = ctrl->add_node();
-		  	p->set_id(n.id);
-		  	p->set_role(n.role);
-		  	p->set_port(n.port);
-		  	p->set_hostname(n.hostname);
-		  	p->set_is_recovery(n.is_recovery);
-		  	p->set_customer_id(n.customer_id);
-		  	p->set_pid(n.pid);
-		}
-	}
-
-	*buf_size = pb.ByteSize();
-	*meta_buf = new char[*buf_size + 1];
-	CHECK(pb.SerializeToArray(*meta_buf, *buf_size)) << "failed to serialize protbuf";
-}
-
-void SHMVAN::UnpackMeta(const char* meta_buf, int buf_size, Meta* meta) {
-	// to protobuf
-	PBMeta pb;
-	CHECK(pb.ParseFromArray(meta_buf, buf_size))
-	  << "failed to parse string into protobuf";
-
-	// to meta
-	meta->head = pb.head();
-	meta->app_id = pb.has_app_id() ? pb.app_id() : Meta::kEmpty;
-	meta->timestamp = pb.has_timestamp() ? pb.timestamp() : Meta::kEmpty;
-	meta->request = pb.request();
-	meta->push = pb.push();
-	meta->pull = pb.pull();
-	meta->simple_app = pb.simple_app();
-	meta->priority = pb.priority();
-	meta->body = pb.body();
-	meta->customer_id = pb.customer_id();
-	meta->data_type.resize(pb.data_type_size());
-  	for (int i = 0; i < pb.data_type_size(); ++i) {
-    	meta->data_type[i] = static_cast<DataType>(pb.data_type(i));
-  	}
-  	if (pb.has_control()) {
-    	const auto& ctrl = pb.control();
-   		meta->control.cmd = static_cast<Control::Command>(ctrl.cmd());
-    	meta->control.barrier_group = ctrl.barrier_group();
-    	meta->control.msg_sig = ctrl.msg_sig();
-    	for (int i = 0; i < ctrl.node_size(); ++i) {
-      		const auto& p = ctrl.node(i);
-      		Node n;
-      		n.role = static_cast<Node::Role>(p.role());
-      		n.port = p.port();
-      		n.hostname = p.hostname();
-      		n.id = p.has_id() ? p.id() : Node::kEmpty;
-      		n.is_recovery = p.is_recovery();
-      		n.customer_id = p.customer_id();
-			n.pid = p.pid();
-      		meta->control.node.push_back(n);
-    	}	
-	} else {
-    	meta->control.cmd = Control::EMPTY;
-  	}
-}
-
 
 int SHMVAN::SendMsg(const Message& msg) {
   	// find the socket

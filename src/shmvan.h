@@ -44,6 +44,11 @@ private:
 	std::condition_variable cv;
 };
 
+struct PIDBuf {
+	int bind_flag;
+	pid_t pid;
+};
+
 class SHMVAN : public Van{
 public:
 	SHMVAN() {}
@@ -54,9 +59,6 @@ public:
 	virtual void Connect(const Node& node);
 	virtual int RecvMsg(Message *msg);
 	virtual int SendMsg(const Message &msg);
-
-	void PackMeta(const Meta& meta, char **meta_buf, int *buf_size);
-	void UnpackMeta(const char* meta_buf, int buf_size, Meta* meta);
 
 private:
 	static void* SignalThread(void *args);
@@ -72,6 +74,10 @@ private:
 
 private:
 	pid_t pid;															//my pid
+
+	//share my pid when bind
+	int pid_shmid;														
+	PIDBuf *pid_shm;																											
 	static SHMVAN *cur_van;
 	sigset_t mask;
 	pthread_t signal_tid;
