@@ -81,6 +81,13 @@ static void CreateBufferFile(std::string &file_name, int sender_pid, int recver_
 	}
 }
 
+static void DestroyBufferFile(int sender_pid, int recver_pid)
+{
+	std::string file_name = std::to_string(sender_pid) + std::to_string(recver_pid);
+	if(IsFileExist(file_name.c_str())) {
+		unlink(file_name.c_str());
+	}
+}
 //this ringbuffer is used kfifo of linux kernel
 static struct VanBuf *VanBufCreate(std::string& buffer_path, int& shmid)
 {
@@ -211,7 +218,7 @@ void SHMVAN::SignalConnect(siginfo_t *info)
 	pid_t sender_pid = info->si_pid;
 	std::string buf_path;
 	int shmid;
-	printf("[%s]my pid: %d, sender pid: %d", __FUNCTION__, pid, sender_pid);
+	printf("[%s]my pid: %d, sender pid: %d\n", __FUNCTION__, pid, sender_pid);
 	CreateBufferFile(buf_path, sender_pid, pid);
 	struct VanBuf *buf = VanBufCreate(buf_path, shmid);
 
@@ -321,20 +328,14 @@ void SHMVAN::Start(int customer_id)
 
 int SHMVAN::Bind(const Node& node, int max_retry)
 {
-	int port = node.port;
-	std::string& ip = node.hostname;
-	std::string ip_tail = ip.substr(ip.length() - 3, ip.length());
-	int id = atoi(ip_tail.c_str());
-	
-
-	printf("Bind id is %d\n", id);
-	
-	int key = ftok("/tmp", id);
+	int port = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
+	int key = ftok("/tmp", port);
 	if(key == -1) {
-        perror("ftok fail!\n");
-        return -1;
+        	perror("ftok fail!\n");
+        	return -1;
 	}
 
+//	printf("Bind port: %d, key: %d\n", port, key);	
 	pid_shmid = shmget(key, sizeof(struct PIDBuf), IPC_CREAT | 0777);
 	if(pid_shmid == -1) {
 		perror("shmget fail!\n");
@@ -350,36 +351,34 @@ int SHMVAN::Bind(const Node& node, int max_retry)
 	pid_shm->bind_flag = BIND_FLAG;
 	pid_shm->pid = pid;
 	
-	printf("Bind Success\n");
+//	printf("Bind Success\n");
 	return port;
 }
 
 void SHMVAN::Connect(const Node& node) 
 {
 	CHECK_NE(node.id, node.kEmpty);
-    CHECK_NE(node.port, node.kEmpty);
+    	CHECK_NE(node.port, node.kEmpty);
 
 	int id = node.id;
 
-	std::string& ip = node.hostname;
-	std::string ip_tail = ip.substr(ip.length() - 3, ip.length());
-
-	int key = ftok("/tmp", atoi(ip_tail.c_str()));
+	int key = ftok("/tmp", node.port);
 	if(key == -1) {
-        perror("ftok fail!\n");
-        return -1;
+        	perror("ftok fail!\n");
+       	 	return;
 	}
 
+//	printf("node.port: %d, key: %d\n", node.port, key);
 	int shmid = shmget(key, sizeof(struct PIDBuf), IPC_CREAT | 0777);
 	if(shmid == -1) {
 		perror("shmget fail!\n");
-		return -1;
+		return;
 	}
 
 	struct PIDBuf *pid_buf = (struct PIDBuf *)shmat(shmid, NULL, 0);
 	if(!pid_buf) {
 		perror("shmat fail!\n");
-		return -1;
+		return;
 	}
 
 	while(pid_buf->bind_flag != BIND_FLAG);
@@ -412,7 +411,7 @@ void SHMVAN::Connect(const Node& node)
 		Notify(SIGCONNECT, node_pid);
 		WaitConnected(buf);
 	}
-	printf("Connect Success!\n");
+//	printf("Connect Success!\n");
 }
 
 void SHMVAN::Stop()
@@ -423,6 +422,7 @@ void SHMVAN::Stop()
 	//delete sender
 	for(const auto& n : sender) {
 		VanBufDestroy(n.second.first, n.second.second);
+		DestroyBufferFile(n.first, pid);
 	}
 
 	shmdt(pid_shm);
@@ -485,7 +485,6 @@ int SHMVAN::SendMsg(const Message& msg) {
   	// find the socket
   	int id = msg.meta.recver;
   	CHECK_NE(id, Meta::kEmpty);
-	printf("Will SendMsg!\n");
 	if(recver_pid.find(id) == recver_pid.end()) {
 		printf("Node %d not connect, [%s] fail!\n", id, __FUNCTION__);
 		return -1;
@@ -514,6 +513,7 @@ int SHMVAN::SendMsg(const Message& msg) {
 
 	struct RingBuffer *ring_buffer = &buf->rb;
 	
+//	printf("Will SendMsg, recv_pid: %d, send_pid: %d!\n", recv_pid, pid);
 	Notify(SIGRECV, recv_pid);
 	//send meta
 	while (true) {
@@ -538,20 +538,21 @@ int SHMVAN::SendMsg(const Message& msg) {
 	
 		send_bytes += data_size;
   	}
-
+	
+//	printf("Send success, recv_pid: %d, send_pid: %d, size: %d, meta_size: %d, data_num: %d\n", recv_pid, pid, send_bytes, meta_size, n);
   	return send_bytes;
 }
 
 int SHMVAN::RecvMsg(Message* msg) 
 {
-	size_t recv_bytes = 0, meta_size, data_num, len, l;
+	size_t  meta_size, data_num, len, l;
 	msg->data.clear();
-	printf("Will RecvMsg!\n");
 	pid_t send_pid = pid_queue.WaitAndPop();
 	if(sender.find(send_pid) == sender.end()) {
 		printf("[%s] error send pid: %d, receive msg fail!\n", __FUNCTION__, send_pid);
 		return -1;
 	}
+//	printf("Will RecvMsg, recv_pid: %d, send_pid: %d\n", pid, send_pid);
 	
 	struct VanBuf *buf = sender[send_pid].second;
 	struct RingBuffer *ring_buffer = &buf->rb;
@@ -560,7 +561,7 @@ int SHMVAN::RecvMsg(Message* msg)
 	data_num = buf->data_num;
 	
 	msg->meta.sender = buf->sender_id;			
-    msg->meta.recver = my_node_.id;
+   	msg->meta.recver = my_node_.id;
 
 	char *meta_buf = (char *)malloc(meta_size);
 	
@@ -574,24 +575,23 @@ int SHMVAN::RecvMsg(Message* msg)
 	UnpackMeta(meta_buf, meta_size, &(msg->meta));
 	free(meta_buf);
 
-	if(recv_bytes > 0) {	
-		for(size_t i = 0; i < data_num; i++) {
-			size_t data_size = buf->data_size[i];
-			char *data_buf = (char *)malloc(data_size);
+	for(size_t i = 0; i < data_num; i++) {
+		size_t data_size = buf->data_size[i];
+		char *data_buf = (char *)malloc(data_size);
 		
-			l = Recv(ring_buffer, data_buf, data_size);
-			if(l != data_size) {
-				printf("Recv data fail!\n");
-				free(data_buf);
-				return -1;
-			}
-			SArray<char> data;
-			data.reset(data_buf, data_size, [](char *data_buf){free(data_buf);});
-			msg->data.push_back(data);
-			len += l;
+		l = Recv(ring_buffer, data_buf, data_size);
+		if(l != data_size) {
+			printf("Recv data fail!\n");
+			free(data_buf);
+			return -1;
 		}
+		SArray<char> data;
+		data.reset(data_buf, data_size, [](char *data_buf){free(data_buf);});
+		msg->data.push_back(data);
+		len += l;
 	}
 	
+//	printf("Recv success, recv_pid: %d, send_pid: %d, size: %ld, meta_size: %ld, data_num: %ld\n", pid, send_pid, len, meta_size, data_num);
 //	elapse = cpu_second() - start;
 
 //	printf("[%s] times: %.3f, recv size: %ld, bandwidth: %.3fGB/s\n", __FUNCTION__, elapse, len, len / (elapse*1024*1024*1024));
