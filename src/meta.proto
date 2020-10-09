@@ -19,9 +19,9 @@ message PBNode {
   // the locally unique id of an customer
   optional int32 customer_id = 10;
 
-  optional int32 shm_id = 6;
-
-  optional int32 init_id = 7;
+//  optional int32 shm_id = 6;
+  optional int32 pid = 6
+//  optional int32 init_id = 7;
 }
 
 // system control info

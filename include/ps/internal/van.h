@@ -83,9 +83,6 @@ class Van {
    */
   inline bool IsReady() { return ready_; }
 
-
-  /** thread function for receving */
-  void Receiving_(Meta& nodes, Meta& recovery_nodes);
  protected:
   /**
    * \brief connect to a node

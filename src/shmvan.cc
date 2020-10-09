@@ -16,15 +16,15 @@
 #include "./meta.pb.h"
 #include "ps/internal/van.h"
 
+namespace ps {
+
 #define SIGCONNECT	40
 #define SIGCONNECTED	(SIGCONNECT+1)
 #define SIGSEND			(SIGCONNECT+2)
 #define SIGRECV			(SIGCONNECT+3)
 #define SIGTERMINATE	(SIGCONNECT+4)
 
-#define BIND_FLAGS	0x12345678
-
-#define ID_OFFSET	10000
+#define TRANSFER_SIZE	(1 << 20)
 
 #define is_power_of_2(x) ((x) != 0 && (((x) & ((x) - 1)) == 0))
 #define min(x,y) ({ typeof(x) _x = (x); typeof(y) _y = (y); (void) (&_x == &_y); _x < _y ? _x : _y; })
@@ -35,45 +35,26 @@
 #define smp_mb()        mb()
 #define smp_rmb()       rmb()
 #define smp_wmb()       wmb()
-#define MB(x)		((x) << 20)
 
-#define TRANSFER_SIZE	(1 << 20)
 
-enum FLAGS {
-	EMPTY_FLAG,
-	RECV_FLAG,
-	CONNECTED_FLAG,
-};
-
-ps::SHMVAN* ps::SHMVAN::cur_van = NULL;
-static pthread_t recv_tid;
-static pthread_t signal_tid;
-static pthread_mutex_t recv_mutex;
-static pthread_mutex_t connect_mutex;
-static pthread_cond_t recv_cond;
-static pthread_cond_t connect_cond;
-std::atomic<FLAGS> flags(EMPTY_FLAG);
-sigset_t mask;
-
-namespace ps {
-
-typedef void (* Handle)(int, siginfo_t *, void *);
-
-static void RegisterSignal(int signo, Handle handle)
+template <typename T>
+void Queue<T>::Push(T val)
 {
-	struct sigaction act;
-        
-    sigemptyset(&act.sa_mask);
-    act.sa_sigaction=handle;
-	act.sa_flags=SA_SIGINFO;
-
-	sigaction(signo, &act, NULL);
+	std::unique_lock <std::mutex> lck(mtx);
+	q.push(std::move(val));
+	cv.notify_all();
 }
 
-static void SignalDefaultHandle(int sig)
+template <typename T>
+T Queue<T>::WaitAndPop()
 {
-	printf("[SignalDefaultHandle] do nothing, %d will be wake up!\n", getpid());
-	return;
+	std::unique_lock <std::mutex> lck(mtx);
+	while(q.empty()) {
+		cv.wait(lck);
+	}
+	T ret = std::move(q.front());
+	q.pop();
+	return ret;
 }
 
 static bool IsFileExist(const char *path)
@@ -88,137 +69,60 @@ static bool IsFileExist(const char *path)
 	return false;
 }
 
-static void CreateBufferFile(std::string &file_name, int id)
+static void CreateBufferFile(std::string &file_name, int sender_pid, int recver_pid)
 {
-	file_name = std::to_string(id);	
+	file_name = std::to_string(sender_pid) + std::to_string(recver_pid);	
 
 	if(!IsFileExist(file_name.c_str())) {
 		creat(file_name.c_str(), 0755);
 	}
 }
-
-static void CreateBufferFile(std::string &file_name, int server_id, int client_id)
-{
-	file_name = std::to_string(server_id) + std::to_string(client_id);	
-
-	if(!IsFileExist(file_name.c_str())) {
-		creat(file_name.c_str(), 0755);
-	}
-}
-
 
 //this ringbuffer is used kfifo of linux kernel
-static struct RingBuffer *RingbufferCreate(std::string& buffer_path, unsigned int size, int& shmid, int id, bool is_server)
+static struct VanBuf *VanBufCreate(std::string& buffer_path, int& shmid)
 {
-	struct RingBuffer *ring_buffer = NULL;
-	if(!is_power_of_2(size)) {
-		printf("size must be power of 2\n");
-		return ring_buffer;
-	}
+	struct VanBuf *buf = NULL;
 	
-	int ringbuffer_key = ftok(buffer_path.c_str(), id);
-	if(ringbuffer_key == -1) {
+	int key = ftok(buffer_path.c_str(), 0);
+	if(key == -1) {
         perror("ftok fail!\n");
-        return ring_buffer;
+        return buf;
 	}
 
-	shmid = shmget(ringbuffer_key, sizeof(struct RingBuffer)+size, IPC_CREAT | 0777);
+	shmid = shmget(key, sizeof(struct VanBuf), IPC_CREAT | 0777);
 	if(shmid == -1) {
 		perror("shmget fail!\n");
 		return ring_buffer;
 	}
 
-	ring_buffer = (struct RingBuffer *)shmat(shmid, NULL, 0);
-	if(!ring_buffer) {
+	buf = (struct VanBuf *)shmat(shmid, NULL, 0);
+	if(!buf) {
 		perror("shmat fail!\n");
 		return ring_buffer;
 	}
 
-	if(is_server) {
-		ring_buffer->server_buffer = (unsigned char *)ring_buffer + sizeof(struct RingBuffer);
-		ring_buffer->size = size;
-		ring_buffer->in = 0;
-		ring_buffer->out = 0;
-		pthread_spin_init(&ring_buffer->lock, PTHREAD_PROCESS_SHARED);
-	} else {
-		ring_buffer->client_buffer = (unsigned char *)ring_buffer + sizeof(struct RingBuffer);
-	}
-	return ring_buffer;
+	return buf;
 }
 
-static void RingBufferDestroy(struct RingBuffer *ring_buffer, int shmid)
+static void VanBufDestroy(int shmid, struct VanBuf *buf)
 {
-	if(!ring_buffer) return;
-	pthread_spin_destroy(&ring_buffer->lock);
-	shmdt(ring_buffer);
+	if(!buf) return;
+	pthread_cond_destroy(&buf->connect_cond);
+	pthread_mutex_destroy(&buf->connect_mutex);
+	pthread_spin_destroy(&buf->rb->lock);
+	shmdt(buf);
 	shmctl(shmid, IPC_RMID, NULL);
 }
 
-static unsigned int __RingBufferPut(struct RingBuffer *ring_buffer, const unsigned char *buffer, unsigned int len, bool is_server)
+static bool VanBufInit(struct VanBuf *buf)
 {
-	unsigned int l;
-
-	len = min(len, ring_buffer->size - ring_buffer->in + ring_buffer->out);
-	if(len == 0) return len;
-	smp_mb();
-
-	l = min(len, ring_buffer->size - (ring_buffer->in & (ring_buffer->size - 1)));
-
-	if(is_server) {
-		std::memcpy(ring_buffer->server_buffer + (ring_buffer->in & (ring_buffer->size - 1)), buffer, l);
-		std::memcpy(ring_buffer->server_buffer, buffer + l, len - l);
-	} else {
-		std::memcpy(ring_buffer->client_buffer + (ring_buffer->in & (ring_buffer->size - 1)), buffer, l);
-		std::memcpy(ring_buffer->client_buffer, buffer + l, len - l);
-	}
-	
-	smp_wmb();
-	ring_buffer->in += len;
-	return len;
-}
-
-static unsigned int __RingBufferGet(struct RingBuffer *ring_buffer, unsigned char *buffer, unsigned int len, bool is_server)
-{
-	unsigned int l;
-
-	len = min(len, ring_buffer->in - ring_buffer->out);
-	if(len == 0) return len;
-	smp_rmb();
-
-	l = min(len, ring_buffer->size - (ring_buffer->out & (ring_buffer->size - 1)));
-
-	if(is_server) {
-		std::memcpy(buffer, ring_buffer->server_buffer + (ring_buffer->out & (ring_buffer->size - 1)), l);
-		std::memcpy(buffer + l, ring_buffer->server_buffer, len - l);
-	} else {
-		std::memcpy(buffer, ring_buffer->client_buffer + (ring_buffer->out & (ring_buffer->size - 1)), l);
-		std::memcpy(buffer + l, ring_buffer->client_buffer, len - l);
-	}
-	
-	smp_mb();
-	ring_buffer->out += len;
-	return len;
-}
-
-static unsigned int RingBufferPut(struct RingBuffer *ring_buffer, const unsigned char *buffer, unsigned int len, bool is_server)
-{
-	unsigned int ret;
-
-	pthread_spin_lock(&ring_buffer->lock);
-	ret = __RingBufferPut(ring_buffer, buffer, len, is_server);
-	pthread_spin_unlock(&ring_buffer->lock);
-	return ret;
-}
-
-static unsigned int RingBufferGet(struct RingBuffer *ring_buffer, unsigned char *buffer, unsigned int len, bool is_server)
-{
-	unsigned int ret;
-	pthread_spin_lock(&ring_buffer->lock);
-	ret = __RingBufferGet(ring_buffer, buffer, len, is_server);
-	if(ring_buffer->in == ring_buffer->out)
-		ring_buffer->in = ring_buffer->out = 0;
-	pthread_spin_unlock(&ring_buffer->lock);
-	return ret;
+	if(!buf) return false;
+	pthread_cond_init(&buf->connect_cond, NULL);
+	pthread_mutex_init(&buf->connect_mutex, NULL);
+	buf->connected_flag = false;
+	buf->rb.size = RINGBUFFER_SIZE;
+	buf->rb.in = buf->rb.out = 0;
+	pthread_spin_init(&buf->rb.lock, PTHREAD_PROCESS_SHARED);
 }
 
 static inline unsigned int RingBufferSize(struct RingBuffer *ring_buffer)
@@ -241,54 +145,109 @@ static inline bool RingBufferFull(struct RingBuffer *ring_buffer)
 	return (ring_buffer->in - ring_buffer->out == ring_buffer->size);
 }
 
-void SHMVAN::SignalConnect()
+static unsigned int __RingBufferPut(struct RingBuffer *ring_buffer, const unsigned char *buffer, unsigned int len)
 {
-	int client_shm_node_id = buf->connector;
-	pthread_spin_unlock(&buf->lock);
+	unsigned int l;
 
-	if(connect_client_ringbuffer.find(client_shm_node_id) == connect_client_ringbuffer.end())
-		SetConnectRingbuffer(client_shm_node_id);
+	len = min(len, ring_buffer->size - ring_buffer->in + ring_buffer->out);
+	if(len == 0) return len;
+	smp_mb();
+
+	l = min(len, ring_buffer->size - (ring_buffer->in & (ring_buffer->size - 1)));
+
+	std::memcpy(ring_buffer->buf + (ring_buffer->in & (ring_buffer->size - 1)), buffer, l);
+	std::memcpy(ring_buffer->buf, buffer + l, len - l);
 	
-	int client_node_id = buf->client_info[client_shm_node_id].node_id;			//Get client node.id
-	c_id_map[client_node_id] = client_shm_node_id;								//this node is server, record id_map
-	printf("[SignalConnect] %d will wake up %d, client_node_id: %d, client_shm_node_id: %d\n", pid, buf->client_info[client_shm_node_id].pid, client_node_id, client_shm_node_id);
-	//wake up client process and notify build connect;
-	kill(buf->client_info[client_shm_node_id].pid, SIGCONNECTED);
+	smp_wmb();
+	ring_buffer->in += len;
+	return len;
 }
 
-void SHMVAN::SignalConnected()
+static unsigned int __RingBufferGet(struct RingBuffer *ring_buffer, unsigned char *buffer, unsigned int len)
 {
-	pthread_mutex_lock(&connect_mutex);
-	flags = CONNECTED_FLAG;
-	pthread_cond_broadcast(&connect_cond);
-	pthread_mutex_unlock(&connect_mutex);
+	unsigned int l;
+
+	len = min(len, ring_buffer->in - ring_buffer->out);
+	if(len == 0) return len;
+	smp_rmb();
+
+	l = min(len, ring_buffer->size - (ring_buffer->out & (ring_buffer->size - 1)));
+
+	std::memcpy(buffer, ring_buffer->buf + (ring_buffer->out & (ring_buffer->size - 1)), l);
+	std::memcpy(buffer + l, ring_buffer->buf, len - l);
+
+	smp_mb();
+	ring_buffer->out += len;
+	return len;
 }
 
-void SHMVAN::SignalRecv()
+static unsigned int RingBufferPut(struct RingBuffer *ring_buffer, const unsigned char *buffer, unsigned int len)
 {
-	sender = buf->connector;
-	sender_identity = buf->sender_identity;
-	pthread_spin_unlock(&buf->lock);
-	
-	pthread_mutex_lock(&recv_mutex);
-	flags = RECV_FLAG;
-	pthread_cond_signal(&recv_cond);
-	pthread_mutex_unlock(&recv_mutex);
+	unsigned int ret;
+
+	pthread_spin_lock(&ring_buffer->lock);
+	ret = __RingBufferPut(ring_buffer, buffer, len, is_server);
+	pthread_spin_unlock(&ring_buffer->lock);
+	return ret;
 }
 
-void SHMVAN::SignalHandle(int signo)
+static unsigned int RingBufferGet(struct RingBuffer *ring_buffer, unsigned char *buffer, unsigned int len)
+{
+	unsigned int ret;
+	pthread_spin_lock(&ring_buffer->lock);
+	ret = __RingBufferGet(ring_buffer, buffer, len);
+	if(ring_buffer->in == ring_buffer->out)
+		ring_buffer->in = ring_buffer->out = 0;
+	pthread_spin_unlock(&ring_buffer->lock);
+	return ret;
+}
+
+void SHMVAN::SignalConnect(siginfo_t *info)
+{
+	pid_t sender_pid = info->s_pid;
+	std::string buf_path;
+	int shmid;
+
+	CreateBufferFile(buf_path, sender_pid, pid);
+	struct VanBuf *buf = VanBufCreate(buf_path, shmid)
+
+	if(buf) {
+		sender[sender_pid] = std::make_pair(shmid, buf);
+		Notify(SIGCONNECTED, sender_pid);
+	} else {
+		printf("[%s]Create Van Buf fail!\n", __FUNCTION__);
+	}
+}
+
+void SHMVAN::SignalConnected(siginfo_t *info)
+{
+	pid_t recv_pid = info->s_pid;
+	struct VanBuf *buf = recver[recv_pid].second;
+	pthread_mutex_lock(&buf->connect_mutex);
+	buf->connected_flag = true;
+	pthread_cond_broadcast(&buf->connect_cond);
+	pthread_mutex_unlock(&buf->connect_mutex);
+}
+
+void SHMVAN::SignalRecv(siginfo_t *info)
+{
+	pid_queue.Push(info->s_pid);
+}
+
+
+void SHMVAN::SignalHandle(int signo, siginfo_t *info)
 {
 	switch(signo) {
 		case SIGCONNECT:
-			cur_van->SignalConnect();
+			cur_van->SignalConnect(info);
 			break;
 
 		case SIGCONNECTED:
-			cur_van->SignalConnected();
+			cur_van->SignalConnected(info);
 			break;
 
 		case SIGRECV:
-			cur_van->SignalRecv();
+			cur_van->SignalRecv(info);
 			break;
 
 		case SIGSEND:
@@ -300,99 +259,48 @@ void SHMVAN::SignalHandle(int signo)
 	}
 }
 
-void SHMVAN::SetCurVan()
-{
-	cur_van = this;
-}
-
-void SHMVAN::SetConnectRingbuffer(int client_shm_node_id)
-{
-	int ringbuffer_shmid;
-	struct RingBuffer *r;
-	std::string buffer_path;
-
-	CreateBufferFile(buffer_path, shm_node_id, client_shm_node_id);
-	r = RingbufferCreate(buffer_path, MB(64), ringbuffer_shmid, shm_node_id, true);
-
-	connect_client_ringbuffer[client_shm_node_id] = std::make_pair(ringbuffer_shmid, r);
-	connect_num++;
-}
-
-void SHMVAN::Notify(int signo, struct VanBuf *buf, int vals)
-{
-	pthread_spin_lock(&buf->lock);
-	buf->connector = vals;
-	kill(buf->pid, signo);
-}
-
-//server and client will notify different pid
-void SHMVAN::Notify(int signo, int pid, struct VanBuf *p, int vals, int sender_identity)
-{
-	pthread_spin_lock(&p->lock);
-	p->connector = vals;
-	p->sender_identity = sender_identity;
-	kill(pid, signo);
-}
-
-void SHMVAN::WaitConnect()
-{
-	pthread_mutex_lock(&connect_mutex);
-	while(flags != CONNECTED_FLAG) {
-		pthread_cond_wait(&connect_cond, &connect_mutex);
-	}
-	flags = EMPTY_FLAG;
-	pthread_mutex_unlock(&connect_mutex);
-}
-
-void* SHMVAN::Receiving(void *args)
-{
-	Meta nodes;
-	Meta recovery_nodes;
-	recovery_nodes.control.cmd = Control::ADD_NODE;
-	double time;
-	while(true) {
-		pthread_mutex_lock(&recv_mutex);
-		//protected sprious wakeup in multicore system
-		while(flags != RECV_FLAG) {
-			pthread_cond_wait(&recv_cond, &recv_mutex);
-		}
-		cur_van->Receiving_(nodes, recovery_nodes);
-		flags = EMPTY_FLAG;
-		pthread_mutex_unlock(&recv_mutex);
-		time = cur_van->cpu_second();
-		printf("Receiving will begin, time: %.3f\n", time);
-		if(!cur_van->IsReady() && cur_van->init) {
-			kill(cur_van->pid, SIGTERMINATE);
-			break;
-		}
-	}
-	printf("Stop Receiving\n");
-	return NULL;
-}
-
 void* SHMVAN::SignalThread(void *args)
 {
 	sigset_t *set = (sigset_t *)args;
-	int s, sig;
+	int signo;
+	siginfo_t info;
 	
 	while(1) {
-		s = sigwait(set, &sig);
-		if(s == 0) {
-			if(sig == SIGTERMINATE) break;
-			SignalHandle(sig);
+		signo = sigwaitinfo(set, &info);
+		if(signo >= 0) {
+			if(signo == SIGTERMINATE) break;
+			SignalHandle(signo, &info);
 		} else {
-			printf("sigwait returned err: %d; %s\n", errno, strerror(errno));
+			printf("sigwaitinfo returned err: %d; %s\n", errno, strerror(errno));
 		}
 	}
 	printf("Stop SignalThread\n");
 	return NULL;
 }
 
+void SHMVAN::SetCurVan()
+{
+	cur_van = this;
+}
+
+void SHMVAN::Notify(int signo, int pid)
+{
+	kill(pid, signo);
+}
+
+void SHMVAN::WaitConnected(struct VanBuf *buf)
+{
+	pthread_mutex_lock(&buf->connect_mutex);
+	while(buf->connected_flag != true) {
+		pthread_cond_wait(&buf->connect_cond, &buf->connect_mutex);
+	}
+	pthread_mutex_unlock(&buf->connect_mutex);	
+}
+
 void SHMVAN::Start(int customer_id)
 {
 	pid = getpid();
 	SetCurVan();
-	SetSHMVan();
 
 	sigemptyset(&mask);
 	sigaddset(&mask, SIGCONNECT);
@@ -401,159 +309,87 @@ void SHMVAN::Start(int customer_id)
 	sigaddset(&mask, SIGRECV);
 	sigaddset(&mask, SIGTERMINATE);
 
-	pthread_sigmask(SIG_BLOCK, &mask, NULL);	
-	
-	pthread_cond_init(&recv_cond, NULL);
-	pthread_cond_init(&connect_cond, NULL);
-	pthread_mutex_init(&recv_mutex, NULL);
-	pthread_mutex_init(&connect_mutex, NULL);
-	pthread_create(&recv_tid, NULL, Receiving, NULL);
+	pthread_sigmask(SIG_BLOCK, &mask, NULL);
 	pthread_create(&signal_tid, NULL, SignalThread, (void *)&mask);
 	
 	Van::Start(customer_id);
-
-	init = true;
 }
 
 int SHMVAN::Bind(const Node& node, int max_retry)
 {
-	int key;
 	int port = node.port;
-	shm_node_id = node.shm_id;
-	
-	key = ftok("/tmp", shm_node_id);
-	if(key == -1) {
-		perror("ftok fail!\n");
-		return -1;
-	}
 
-	shmid = shmget(key, sizeof(struct VanBuf), IPC_CREAT | 0777);
+	node.pid = pid;
 
-	buf = (struct VanBuf *)shmat(shmid, NULL, 0);
-	if(buf == NULL) {
-		printf("shmat fail!\n");
-		return -1;
-	}
-
-	buf->pid = pid;
-	buf->shm_node_id = shm_node_id;
-	buf->flag = BIND_FLAGS;
-
-	pthread_spin_init(&buf->lock, PTHREAD_PROCESS_SHARED);
-	
 	return port;
 }
 
 void SHMVAN::Connect(const Node& node) 
 {
+	CHECK_NE(node.id, node.kEmpty);
     CHECK_NE(node.port, node.kEmpty);
-	int server_key, server_shmid, ringbuffer_shmid;
-	struct VanBuf *p;
-	struct RingBuffer *r;
-	std::string buffer_path;
-	int server_shm_node_id = node.shm_id;
 
-	if(connect_buf.find(server_shm_node_id) != connect_buf.end()) {
-		printf("The client %d has connected server %d!\n", my_node_.id, node.id);
-		
-		//node.id is assigned by scheduler after van->start(), so should update the my_node_.id
- 		p = connect_buf[server_shm_node_id].second;
-		if(my_node_.id != p->client_info[shm_node_id].node_id && my_node_.id != Node::kEmpty) {
-			p->client_info[shm_node_id].node_id = my_node_.id;
+	int id = node.id;
+	int node_pid = node.pid;
+
+	if(recver_pid.find(id) == recver_pid.end()) {
+		recver_pid[id] = node_pid;
+
+		//has connected, only update <id, node_pid>
+		if(recver.find(node_pid) != recver.end()) {
+
+			printf("This node has connected, only update <id, node_pid> recored!\n");
+			return ;
 		}
 
-		int server_id = (node.id != Node::kEmpty) ? node.id : node.init_id;
-		if(s_id_map.find(server_id) == s_id_map.end()) {
-			s_id_map[server_id] = server_shm_node_id;
+		std::string buf_path;
+		int shmid;
+		CreateBufferFile(buf_path, pid, node_pid);
+		struct VanBuf *buf = VanBufCreate(buf_path, shmid);
+		if(buf) {
+			VanBufInit(buf);
+			buf->sender_id = my_node_.id;
+			recver[node_pid] = std::make_pair(shmid, buf);
+		} else {
+			printf("VanBuf create fail!\n");
 		}
 
-		//notify server update new client_node.id
-		Notify(SIGCONNECT, p, shm_node_id);
-		WaitConnect();				//wait build connect;
-	} else {
-	
-		server_key = ftok("/tmp", server_shm_node_id);
-		if(server_key == -1) {
-			perror("ftok fail!\n");
-			return;
-		}
-
-		server_shmid = shmget(server_key, sizeof(struct VanBuf), IPC_CREAT | 0777);
-		p = (struct VanBuf *)shmat(server_shmid, NULL, 0);
-		
-		while(p->flag != BIND_FLAGS);				//wait server LISTEN
-		p->client_info[shm_node_id].pid = pid;
-		p->client_info[shm_node_id].recving_threadid = recving_threadid;
-		p->client_info[shm_node_id].node_id = (my_node_.id != Node::kEmpty) ? my_node_.id : my_node_.init_id;
-		connect_buf[server_shm_node_id] = std::make_pair(server_shmid, p);
-		int server_id = (node.id != Node::kEmpty) ? node.id : node.init_id;
-		s_id_map[server_id] = server_shm_node_id;										//this node is client, record id map
-		
-		//send shm_node_id to server by sigqueue and build connect
-		Notify(SIGCONNECT, p, shm_node_id);
-		WaitConnect();				//wait build connect;
-		
-		CreateBufferFile(buffer_path, server_shm_node_id, shm_node_id);
-		r = RingbufferCreate(buffer_path, MB(16), ringbuffer_shmid, server_shm_node_id, false);
-		connect_server_ringbuffer[server_shm_node_id] = std::make_pair(ringbuffer_shmid, r);
-		unlink(buffer_path.c_str());
+		Notify(SIGCONNECT, node_pid);
+		WaitConnected(buf);
 	}
 }
 
 void SHMVAN::Stop()
 {
 	Van::Stop();
-	pthread_join(recv_tid, NULL);
+	Notify(SIGTERMINATE, pid);
 	pthread_join(signal_tid, NULL);
-	//delete connect buf
-	for(const auto& n : connect_buf) {
-		shmdt(n.second.second);
-		shmctl(n.second.first, IPC_RMID, NULL);
+	//delete sender
+	for(const auto& n : sender) {
+		VanBufDestroy(n.second.first, n.second.second);
 	}
-
-	//delete ringbuffer, only can be deleted by server
-	for(const auto& n : connect_client_ringbuffer) {
-//		shmdt(n.second.second);
-//		shmctl(n.second.first, IPC_RMID, NULL);
-		RingBufferDestroy(n.second.second, n.second.first);
-	}
-
-	//delete self buf
-	pthread_spin_destroy(&buf->lock);
-	shmdt(buf);
-	shmctl(shmid, IPC_RMID, NULL);
 	
-	connect_buf.clear();
-	connect_server_ringbuffer.clear();
-	connect_client_ringbuffer.clear();
-	init = false;
+	recver.clear();
+	recver_pid.clear();
 }
 
-ssize_t SHMVAN::Recv(const int node_id, void *buf, size_t len, bool is_server)
+
+ssize_t SHMVAN::Recv(struct RingBuffer *ring_buffer, void *buf, size_t len)
 {
 	ssize_t l = 0, _l;
-	struct RingBuffer *ring_buffer = NULL;
 	
 	if(len == 0) return l;
-
-	if(is_server) {
-		if(connect_client_ringbuffer.find(node_id)!=connect_client_ringbuffer.end())
-			ring_buffer = connect_client_ringbuffer[node_id].second;
-	} else {
-		if(connect_server_ringbuffer.find(node_id)!=connect_server_ringbuffer.end())
-			ring_buffer = connect_server_ringbuffer[node_id].second;
-	}
 
 	if(!ring_buffer) return -1;
 
 	while(len > TRANSFER_SIZE) {
-		_l = RingBufferGet(ring_buffer, (unsigned char *)buf+l, TRANSFER_SIZE, is_server);
+		_l = RingBufferGet(ring_buffer, (unsigned char *)buf+l, TRANSFER_SIZE);
 		l += _l;
 		len -= _l;
 	}
 
 	while(len > 0) {
-		_l = RingBufferGet(ring_buffer, (unsigned char *)buf+l, len, is_server);
+		_l = RingBufferGet(ring_buffer, (unsigned char *)buf+l, len);
 		l += _l;
 		len -= _l;
 	}
@@ -561,34 +397,24 @@ ssize_t SHMVAN::Recv(const int node_id, void *buf, size_t len, bool is_server)
 	return l;
 }
 
-ssize_t SHMVAN::Send(const int node_id, const void *buf, size_t len, bool is_server)
+ssize_t SHMVAN::Send(struct RingBuffer *ring_buffer, const void *buf, size_t len)
 {
 	ssize_t l = 0, _l;
-	struct RingBuffer *ring_buffer = NULL;
 
 	if(len == 0) return l;
 
-	if(is_server) {
-		if(connect_client_ringbuffer.find(node_id)!=connect_client_ringbuffer.end())
-			ring_buffer = connect_client_ringbuffer[node_id].second;
-	} else {
-		if(connect_server_ringbuffer.find(node_id)!=connect_server_ringbuffer.end())
-			ring_buffer = connect_server_ringbuffer[node_id].second;
-	}
-
 	if(!ring_buffer) {
-		printf("Node %d has no send ringbuffer!\n", node_id);
 		return -1;
 	}
 	
 	while(len > TRANSFER_SIZE) {
-		_l = RingBufferPut(ring_buffer, (unsigned char *)buf+l, TRANSFER_SIZE, is_server);
+		_l = RingBufferPut(ring_buffer, (unsigned char *)buf+l, TRANSFER_SIZE);
 		l += _l;
 		len -= _l;
 	}
 	
 	while(len > 0) {
-		_l = RingBufferPut(ring_buffer,(unsigned char *)buf+l, len, is_server);
+		_l = RingBufferPut(ring_buffer,(unsigned char *)buf+l, len);
 		l += _l;
 		len -= _l;
 	}
@@ -626,8 +452,7 @@ void SHMVAN::PackMeta(const Meta& meta, char **meta_buf, int* buf_size) {
 		  	p->set_hostname(n.hostname);
 		  	p->set_is_recovery(n.is_recovery);
 		  	p->set_customer_id(n.customer_id);
-		  	p->set_shm_id(n.shm_id);
-		  	p->set_init_id(n.init_id);
+		  	p->set_pid(n.pid);
 		}
 	}
 
@@ -671,8 +496,7 @@ void SHMVAN::UnpackMeta(const char* meta_buf, int buf_size, Meta* meta) {
       		n.id = p.has_id() ? p.id() : Node::kEmpty;
       		n.is_recovery = p.is_recovery();
       		n.customer_id = p.customer_id();
-			n.shm_id = p.shm_id();
-			n.init_id = p.init_id();
+			n.pid = p.pid();
       		meta->control.node.push_back(n);
     	}	
 	} else {
@@ -680,47 +504,44 @@ void SHMVAN::UnpackMeta(const char* meta_buf, int buf_size, Meta* meta) {
   	}
 }
 
-//client act sender
+
 int SHMVAN::SendMsg(const Message& msg) {
   	// find the socket
   	int id = msg.meta.recver;
   	CHECK_NE(id, Meta::kEmpty);
-	
-	double time = cpu_second();	
-	printf("[%d->%d] Start: %.3f\n", my_node_.id, id, time);
-	int target_id, target_pid;
-	struct VanBuf *p;
 
-	target_id = s_id_map[id];
-	p = connect_buf[target_id].second;
-	target_pid = p->pid;
+	if(recver_pid.find(id) == recver_pid.end()) {
+		printf("Node %d not connect, [%s] fail!\n", __FUNCTION__);
+		return -1;
+	}
+
+	pid_t recv_pid = recver_pid[id];
+	struct VanBuf *buf = recver[recv_pid].second;
 
 	int meta_size; char* meta_buf;
   	PackMeta(msg.meta, &meta_buf, &meta_size);
 	int size = 0, size_;
 	int n = msg.data.size();
-	if(n > 1024) {
+	if(n > 64) {
 		printf("Send limit exceeded");
 		return -1;
 	}
 	
-	p->client_info[shm_node_id].meta_size = meta_size;
-	p->client_info[shm_node_id].recv_counts = n;
+	buf->meta_size = meta_size;
+	buf->data_num = n;
 
 	for(int i = 0; i < n; i++) {
 		size_ = msg.data[i].size();
-		p->client_info[shm_node_id].recv_size[i] = size_;
+		buf->data_size[i] = size_;
 		size += size_;
 	}
-	p->client_info[shm_node_id].total_recv_size = size+meta_size;
 
-	int my_node_id = (my_node_.id == Node::kEmpty) ? my_node_.init_id : my_node_.id;
-	bool is_server = false;	
+	struct RingBuffer *ring_buffer = &buf->rb;
 	
-	Notify(SIGRECV, target_pid, p, my_node_id, is_server);
+	Notify(SIGRECV, recv_pid);
 	//send meta
 	while (true) {
-		if (Send(target_id, meta_buf, meta_size, is_server) == meta_size) break;
+		if (Send(ring_buffer, meta_buf, meta_size) == meta_size) break;
 		printf("WARNING failed to send meta data to node: %d, send size: %d\n", id, meta_size);
 		return -1;
 	}
@@ -734,7 +555,7 @@ int SHMVAN::SendMsg(const Message& msg) {
 		int data_size = data->size();
 		char *data_buf = data->data();
 		while (true) {
-	  		if (Send(target_id, data_buf, data_size, is_server) == data_size) break;
+	  		if (Send(ring_buffer, data_buf, data_size) == data_size) break;
 	  		printf("WARNING failed to send meta data to node: %d, send size: %d\n", id, data_size);
 	  		return -1;
 		}
@@ -745,101 +566,29 @@ int SHMVAN::SendMsg(const Message& msg) {
   	return send_bytes;
 }
 
-
-//Send msg, priority server to send data
-int SHMVAN::SendMsg1(const Message& msg) {
-  	// find the socket
-  	int id = msg.meta.recver;
-  	CHECK_NE(id, Meta::kEmpty);
-
-  	bool is_server = false;
-
-	int meta_size; char* meta_buf;
-  	PackMeta(msg.meta, &meta_buf, &meta_size);
-	int size = 0;
-	int n = msg.data.size();
-	for(int i = 0; i < n; i++) {
-		size += msg.data[i].size();
-	}
-
-	int target_id, target_pid;
-	struct VanBuf *p;
-
-	if(is_server) {
-		p = buf;
-		target_id = c_id_map[id];
-		target_pid = buf->client_info[target_id].pid;
-	//	p->client_info[target_id].recv_size = size;
-		p->client_info[target_id].meta_size = meta_size;
-	} else {
-		target_id = s_id_map[id];
-		p = connect_buf[target_id].second;
-		target_pid = p->pid;
-	//	p->client_info[shm_node_id].recv_size = size;
-		p->client_info[shm_node_id].meta_size = meta_size;
-	}
-
-	int my_node_id = (my_node_.id == Node::kEmpty) ? my_node_.init_id : my_node_.id;
-	
-	Notify(SIGRECV, target_pid, p, my_node_id, is_server);
-	//send meta
-	while (true) {
-		if (Send(target_id, meta_buf, meta_size, is_server) == meta_size) break;
-		printf("WARNING failed to send meta data to node: %d, send size: %d\n", id, meta_size);
-		return -1;
-	}
-	delete meta_buf;
-	
-  	int send_bytes = meta_size;
-
-	// send data
-  	for (int i = 0; i < n; ++i) {
-		SArray<char>* data = new SArray<char>(msg.data[i]);
-		int data_size = data->size();
-		char *data_buf = data->data();	
-		while (true) {
-	  		if (Send(target_id, data_buf, data_size, is_server) == data_size) break;
-	  		printf("WARNING failed to send meta data to node: %d, send size: %d\n", id, data_size);
-	  		return -1;
-		}
-	
-		send_bytes += data_size;
-  	}
-
-  	return send_bytes;
-}
-
-double SHMVAN::cpu_second(void)
-{
-	struct timeval tv;
-    double t;
-
-    gettimeofday(&tv, nullptr);
-    t = tv.tv_sec + ((double)tv.tv_usec)/1000000;
-    return t;
-}
-
-//recver must be server
 int SHMVAN::RecvMsg(Message* msg) 
 {
-	int target_id;
-	size_t recv_bytes = 0, meta_size, recv_counts, len, l;
+	size_t recv_bytes = 0, meta_size, data_num, len, l;
 	msg->data.clear();
-	double start, elapse;
-	bool is_client = false;
+
+	pid_t send_pid = WaitAndPop();
+	if(sender.find(send_pid) == sender.end()) {
+		printf("[%s] error send pid: %d, receive msg fail!\n", __FUNCTION__, send_pid);
+		return -1;
+	}
 	
-	start = cpu_second();
-	target_id = c_id_map[sender];
-	recv_bytes = buf->client_info[target_id].total_recv_size;
-	meta_size = buf->client_info[target_id].meta_size;
-	recv_counts = buf->client_info[target_id].recv_counts;
+	struct VanBuf *buf = sender[send_pid];
+	struct RingBuffer *ring_buffer = &buf->rb;
 	
-	msg->meta.sender = (sender == target_id + ID_OFFSET) ? Meta::kEmpty : sender;			//sender == target_id + 10000 is in init stage, node don't have global ID
+	meta_size = buf->meta_size;
+	data_num = buf->data_num;
+	
+	msg->meta.sender = buf->sender_id;			
     msg->meta.recver = my_node_.id;
 
 	char *meta_buf = (char *)malloc(meta_size);
 	
-	len = Recv(target_id, meta_buf, meta_size, (!is_client));
+	len = Recv(ring_buffer, meta_buf, meta_size);
 	if(len != meta_size) {
 		printf("Recv meta data fail!\n");
 		free(meta_buf);
@@ -850,11 +599,11 @@ int SHMVAN::RecvMsg(Message* msg)
 	free(meta_buf);
 
 	if(recv_bytes > 0) {	
-		for(size_t i = 0; i < recv_counts; i++) {
-			size_t data_size = buf->client_info[target_id].recv_size[i];
+		for(size_t i = 0; i < data_num; i++) {
+			size_t data_size = buf->data_size[i];
 			char *data_buf = (char *)malloc(data_size);
 		
-			l = Recv(target_id, data_buf, data_size, (!is_client));
+			l = Recv(ring_buffer, data_buf, data_size);
 			if(l != data_size) {
 				printf("Recv data fail!\n");
 				free(data_buf);
@@ -867,63 +616,13 @@ int SHMVAN::RecvMsg(Message* msg)
 		}
 	}
 	
-	elapse = cpu_second() - start;
+//	elapse = cpu_second() - start;
 
-	printf("[%s] times: %.3f, recv size: %ld, bandwidth: %.3fGB/s\n", __FUNCTION__, elapse, len, len / (elapse*1024*1024*1024));
+//	printf("[%s] times: %.3f, recv size: %ld, bandwidth: %.3fGB/s\n", __FUNCTION__, elapse, len, len / (elapse*1024*1024*1024));
 
 	return len;
 }
 
-//Recv msg, priority client to recv data
-int SHMVAN::RecvMsg1(Message* msg) 
-{
-	int target_id;
-	struct VanBuf *p;
-	size_t recv_bytes = 0, meta_size, recv_counts;
-	msg->data.clear();
-
-	bool is_client = sender_identity;		//if sender is server, this is client
-	if(is_client) {
-		target_id = s_id_map[sender];
-		p = connect_buf[target_id].second;
-//		recv_bytes = p->client_info[shm_node_id].recv_size;
-		meta_size = p->client_info[shm_node_id].meta_size;
-	} else {
-		target_id = c_id_map[sender];
-//		recv_bytes = buf->client_info[target_id].recv_size;
-		meta_size = buf->client_info[target_id].meta_size;
-	}
-	
-	msg->meta.sender = (sender == target_id + ID_OFFSET) ? Meta::kEmpty : sender;			//sender == target_id + 10000 is in init stage, node don't have global ID
-    msg->meta.recver = my_node_.id;
-
-	char *meta_buf = (char *)malloc(meta_size);
-	
-	recv_counts = Recv(target_id, meta_buf, meta_size, (!is_client));
-	if(recv_counts != meta_size) {
-		printf("Recv meta data fail!\n");
-		free(meta_buf);
-		return -1;
-	}
-
-	UnpackMeta(meta_buf, meta_size, &(msg->meta));
-	free(meta_buf);
-
-	if(recv_bytes > 0) {	
-		char *recv_buf = (char *)malloc(recv_bytes);
-		recv_counts += Recv(target_id, recv_buf, recv_bytes, (!is_client));
-		if(recv_counts != recv_bytes + meta_size) {
-			printf("Recv data fail!\n");
-			free(recv_buf);
-			return -1;
-		}
-		SArray<char> data;
-		data.reset(recv_buf, recv_bytes, [](char *recv_buf){free(recv_buf);});
-		msg->data.push_back(data);
-	}
-	
-	return recv_counts;
-}
 
 }
 

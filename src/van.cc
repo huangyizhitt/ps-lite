@@ -312,10 +312,6 @@ void Van::Start(int customer_id) {
       my_node_.customer_id = customer_id;
     }
 	
-    if(is_shmvan) {
-    	my_node_.shm_id = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_SHM_ID")));
-	my_node_.init_id = (my_node_.id == Node::kEmpty) ? my_node_.shm_id + 10000 : my_node_.id;
-    }
     // bind.
     my_node_.port = Bind(my_node_, is_scheduler_ ? 0 : 40);
     PS_VLOG(1) << "Bind to " << my_node_.DebugString();
@@ -329,10 +325,8 @@ void Van::Start(int customer_id) {
       drop_rate_ = atoi(Environment::Get()->find("PS_DROP_MSG"));
     }
     // start receiver
-
-    if(!is_shmvan)
-    	receiver_thread_ =
-        	std::unique_ptr<std::thread>(new std::thread(&Van::Receiving, this));
+	receiver_thread_ =
+    	std::unique_ptr<std::thread>(new std::thread(&Van::Receiving, this));
     init_stage++;
   }
   start_mu_.unlock();
@@ -385,8 +379,7 @@ void Van::Stop() {
   exit.meta.customer_id = 0;
   int ret = SendMsg(exit);
   CHECK_NE(ret, -1);
-  if(!is_shmvan)
-  	receiver_thread_->join();
+  receiver_thread_->join();
   init_stage = 0;
   if (!is_scheduler_) heartbeat_thread_->join();
   if (resender_) delete resender_;
@@ -584,45 +577,4 @@ void Van::Heartbeat() {
   }
 }
 
-void Van::Receiving_(Meta& nodes, Meta& recovery_nodes)
-{
-    Message msg;
-    int recv_bytes = RecvMsg(&msg);
-    // For debug, drop received message
-    if (ready_.load() && drop_rate_ > 0) {
-      unsigned seed = time(NULL) + my_node_.id;
-      if (rand_r(&seed) % 100 < drop_rate_) {
-        LOG(WARNING) << "Drop message " << msg.DebugString();
-      	return;
-      }
-    }
-
-    CHECK_NE(recv_bytes, -1);
-    recv_bytes_ += recv_bytes;
-    if (Postoffice::Get()->verbose() >= 2) {
-      PS_VLOG(2) << msg.DebugString();
-    }
-    // duplicated message
-    if (resender_ && resender_->AddIncomming(msg)) return;
-
-    if (!msg.meta.control.empty()) {
-      // control msg
-      auto& ctrl = msg.meta.control;
-      
-      if (ctrl.cmd == Control::TERMINATE) {
-        ProcessTerminateCommand();
-      } else if (ctrl.cmd == Control::ADD_NODE) {
-        ProcessAddNodeCommand(&msg, &nodes, &recovery_nodes);
-      } else if (ctrl.cmd == Control::BARRIER) {
-        ProcessBarrierCommand(&msg);
-      } else if (ctrl.cmd == Control::HEARTBEAT) {
-        ProcessHearbeat(&msg);
-      } else {
-        LOG(WARNING) << "Drop unknown typed message " << msg.DebugString();
-      }
-    } else {
-      ProcessDataMsg(&msg);
-    }
-
-}
 }  // namespace ps
