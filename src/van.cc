@@ -75,7 +75,6 @@ void Van::ProcessAddNodeCommandAtScheduler(Message* msg, Meta* nodes,
                      : Postoffice::WorkerRankToID(num_workers_);
         PS_VLOG(1) << "assign rank=" << id << " to node " << node.DebugString();
         node.id = id;
-	printf("[%s] node id: %d, node shm id: %d\n", __FUNCTION__, node.id, node.shm_id);
         Connect(node);
         Postoffice::Get()->UpdateHeartbeat(node.id, t);
         connected_nodes_[node_host_ip] = id;

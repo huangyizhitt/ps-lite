@@ -58,12 +58,13 @@ public:
 	void PackMeta(const Meta& meta, char **meta_buf, int *buf_size);
 	void UnpackMeta(const char* meta_buf, int buf_size, Meta* meta);
 
-private
+private:
 	static void* SignalThread(void *args);
 	static void SignalHandle(int signo, siginfo_t *info);
 	void SetCurVan();
 	void Notify(int signo, int pid);
-	void WaitConnected();
+	void WaitConnected(struct VanBuf *buf);
+	void SignalRecv(siginfo_t *info);
 	void SignalConnected(siginfo_t *info);
 	void SignalConnect(siginfo_t *info);
 	ssize_t Recv(struct RingBuffer *ring_buffer, void *buf, size_t len);

@@ -36,6 +36,7 @@ namespace ps {
 #define smp_rmb()       rmb()
 #define smp_wmb()       wmb()
 
+SHMVAN *SHMVAN::cur_van = NULL;
 
 template <typename T>
 void Queue<T>::Push(T val)
@@ -92,13 +93,13 @@ static struct VanBuf *VanBufCreate(std::string& buffer_path, int& shmid)
 	shmid = shmget(key, sizeof(struct VanBuf), IPC_CREAT | 0777);
 	if(shmid == -1) {
 		perror("shmget fail!\n");
-		return ring_buffer;
+		return buf;
 	}
 
 	buf = (struct VanBuf *)shmat(shmid, NULL, 0);
 	if(!buf) {
 		perror("shmat fail!\n");
-		return ring_buffer;
+		return buf;
 	}
 
 	return buf;
@@ -109,7 +110,7 @@ static void VanBufDestroy(int shmid, struct VanBuf *buf)
 	if(!buf) return;
 	pthread_cond_destroy(&buf->connect_cond);
 	pthread_mutex_destroy(&buf->connect_mutex);
-	pthread_spin_destroy(&buf->rb->lock);
+	pthread_spin_destroy(&buf->rb.lock);
 	shmdt(buf);
 	shmctl(shmid, IPC_RMID, NULL);
 }
@@ -123,6 +124,7 @@ static bool VanBufInit(struct VanBuf *buf)
 	buf->rb.size = RINGBUFFER_SIZE;
 	buf->rb.in = buf->rb.out = 0;
 	pthread_spin_init(&buf->rb.lock, PTHREAD_PROCESS_SHARED);
+	return true;
 }
 
 static inline unsigned int RingBufferSize(struct RingBuffer *ring_buffer)
@@ -186,7 +188,7 @@ static unsigned int RingBufferPut(struct RingBuffer *ring_buffer, const unsigned
 	unsigned int ret;
 
 	pthread_spin_lock(&ring_buffer->lock);
-	ret = __RingBufferPut(ring_buffer, buffer, len, is_server);
+	ret = __RingBufferPut(ring_buffer, buffer, len);
 	pthread_spin_unlock(&ring_buffer->lock);
 	return ret;
 }
@@ -204,12 +206,12 @@ static unsigned int RingBufferGet(struct RingBuffer *ring_buffer, unsigned char 
 
 void SHMVAN::SignalConnect(siginfo_t *info)
 {
-	pid_t sender_pid = info->s_pid;
+	pid_t sender_pid = info->si_pid;
 	std::string buf_path;
 	int shmid;
 
 	CreateBufferFile(buf_path, sender_pid, pid);
-	struct VanBuf *buf = VanBufCreate(buf_path, shmid)
+	struct VanBuf *buf = VanBufCreate(buf_path, shmid);
 
 	if(buf) {
 		sender[sender_pid] = std::make_pair(shmid, buf);
@@ -221,7 +223,7 @@ void SHMVAN::SignalConnect(siginfo_t *info)
 
 void SHMVAN::SignalConnected(siginfo_t *info)
 {
-	pid_t recv_pid = info->s_pid;
+	pid_t recv_pid = info->si_pid;
 	struct VanBuf *buf = recver[recv_pid].second;
 	pthread_mutex_lock(&buf->connect_mutex);
 	buf->connected_flag = true;
@@ -231,7 +233,7 @@ void SHMVAN::SignalConnected(siginfo_t *info)
 
 void SHMVAN::SignalRecv(siginfo_t *info)
 {
-	pid_queue.Push(info->s_pid);
+	pid_queue.Push(info->si_pid);
 }
 
 
@@ -300,6 +302,7 @@ void SHMVAN::WaitConnected(struct VanBuf *buf)
 void SHMVAN::Start(int customer_id)
 {
 	pid = getpid();
+	my_node_.pid = pid;
 	SetCurVan();
 
 	sigemptyset(&mask);
@@ -318,9 +321,7 @@ void SHMVAN::Start(int customer_id)
 int SHMVAN::Bind(const Node& node, int max_retry)
 {
 	int port = node.port;
-
-	node.pid = pid;
-
+	printf("Bind Success");
 	return port;
 }
 
@@ -357,6 +358,7 @@ void SHMVAN::Connect(const Node& node)
 		Notify(SIGCONNECT, node_pid);
 		WaitConnected(buf);
 	}
+	printf("Connect Success!\n");
 }
 
 void SHMVAN::Stop()
@@ -509,9 +511,9 @@ int SHMVAN::SendMsg(const Message& msg) {
   	// find the socket
   	int id = msg.meta.recver;
   	CHECK_NE(id, Meta::kEmpty);
-
+	printf("Will SendMsg!\n");
 	if(recver_pid.find(id) == recver_pid.end()) {
-		printf("Node %d not connect, [%s] fail!\n", __FUNCTION__);
+		printf("Node %d not connect, [%s] fail!\n", id, __FUNCTION__);
 		return -1;
 	}
 
@@ -570,14 +572,14 @@ int SHMVAN::RecvMsg(Message* msg)
 {
 	size_t recv_bytes = 0, meta_size, data_num, len, l;
 	msg->data.clear();
-
-	pid_t send_pid = WaitAndPop();
+	printf("Will RecvMsg!\n");
+	pid_t send_pid = pid_queue.WaitAndPop();
 	if(sender.find(send_pid) == sender.end()) {
 		printf("[%s] error send pid: %d, receive msg fail!\n", __FUNCTION__, send_pid);
 		return -1;
 	}
 	
-	struct VanBuf *buf = sender[send_pid];
+	struct VanBuf *buf = sender[send_pid].second;
 	struct RingBuffer *ring_buffer = &buf->rb;
 	
 	meta_size = buf->meta_size;
