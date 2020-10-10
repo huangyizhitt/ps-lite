@@ -18,8 +18,6 @@
 
 namespace ps {
 
-#define TIME_TEST
-
 //use real-time signals
 #define SIGCONNECT	40
 #define SIGCONNECTED	(SIGCONNECT+1)
@@ -558,10 +556,6 @@ int SHMVAN::RecvMsg(Message* msg)
 {
 	size_t  meta_size, data_num, len, l;
 
-#ifdef TIME_TEST
-	double start, elapse;
-#endif
-	
 	msg->data.clear();
 	pid_t send_pid = pid_queue.WaitAndPop();
 	if(sender.find(send_pid) == sender.end()) {
@@ -608,13 +602,14 @@ int SHMVAN::RecvMsg(Message* msg)
 	}
 	
 //	printf("Recv success, recv_pid: %d, send_pid: %d, size: %ld, meta_size: %ld, data_num: %ld\n", pid, send_pid, len, meta_size, data_num);
-#ifdef TIME_TEST
+#ifdef TEST_TIME
+	double start, elapse;
 	elapse = cpu_second();
 	start = buf->sender_start;
 	elapse -= start;
-	printf("[%s] node %d to node %d cost times: %.3f,
-		size: %ld, bandwidth: %.3fGB/s\n", __FUNCTION__, msg->meta.sender, msg->meta.recver,
-		elapse, len, len / (elapse*1024*1024*1024));
+	printf("[%s] node %d to node %d cost times: %.3f, size: %ld, bandwidth: %.3fGB/s\n", 
+		__FUNCTION__, msg->meta.sender, msg->meta.recver,
+		elapse, 2*len, 2*len / (elapse*1024*1024*1024));
 #endif
 	
 	return len;

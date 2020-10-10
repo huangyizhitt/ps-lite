@@ -12,6 +12,7 @@
 namespace ps {
 
 #define RINGBUFFER_SIZE		(16*1024*1024)			//64MB
+#define TEST_TIME
 
 struct RingBuffer {
 	unsigned int size;
