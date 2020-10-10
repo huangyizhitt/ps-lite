@@ -18,6 +18,7 @@
 
 namespace ps {
 
+//use real-time signals
 #define SIGCONNECT	40
 #define SIGCONNECTED	(SIGCONNECT+1)
 #define SIGSEND			(SIGCONNECT+2)
@@ -546,6 +547,10 @@ int SHMVAN::SendMsg(const Message& msg) {
 int SHMVAN::RecvMsg(Message* msg) 
 {
 	size_t  meta_size, data_num, len, l;
+
+	double start, elapse;
+	start = cpu_second();
+	
 	msg->data.clear();
 	pid_t send_pid = pid_queue.WaitAndPop();
 	if(sender.find(send_pid) == sender.end()) {
@@ -592,11 +597,20 @@ int SHMVAN::RecvMsg(Message* msg)
 	}
 	
 //	printf("Recv success, recv_pid: %d, send_pid: %d, size: %ld, meta_size: %ld, data_num: %ld\n", pid, send_pid, len, meta_size, data_num);
-//	elapse = cpu_second() - start;
-
-//	printf("[%s] times: %.3f, recv size: %ld, bandwidth: %.3fGB/s\n", __FUNCTION__, elapse, len, len / (elapse*1024*1024*1024));
+	elapse = cpu_second() - start;
+	printf("[%s] times: %.3f, recv size: %ld, bandwidth: %.3fGB/s\n", __FUNCTION__, elapse, len, len / (elapse*1024*1024*1024));
 
 	return len;
+}
+
+double SHMVAN::cpu_second(void)
+{
+	struct timeval tv;
+    double t;
+
+    gettimeofday(&tv, nullptr);
+    t = tv.tv_sec + ((double)tv.tv_usec)/1000000;
+    return t;
 }
 
 

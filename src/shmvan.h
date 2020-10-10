@@ -72,6 +72,9 @@ private:
 	ssize_t Recv(struct RingBuffer *ring_buffer, void *buf, size_t len);
 	ssize_t Send(struct RingBuffer *ring_buffer, const void *buf, size_t len);
 
+	//test time
+	double cpu_second(void);
+
 private:
 	pid_t pid;															//my pid
 
