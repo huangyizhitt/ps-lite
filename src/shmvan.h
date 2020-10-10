@@ -29,6 +29,9 @@ struct VanBuf {
 	pthread_mutex_t connect_mutex;
 	pthread_cond_t connect_cond;
 	bool connected_flag;
+#ifdef TEST_TIME
+	double sender_start;
+#endif
 	struct RingBuffer rb;
 };
 

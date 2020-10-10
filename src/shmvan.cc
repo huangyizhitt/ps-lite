@@ -18,6 +18,8 @@
 
 namespace ps {
 
+#define TIME_TEST
+
 //use real-time signals
 #define SIGCONNECT	40
 #define SIGCONNECTED	(SIGCONNECT+1)
@@ -483,7 +485,10 @@ ssize_t SHMVAN::Send(struct RingBuffer *ring_buffer, const void *buf, size_t len
 }
 
 int SHMVAN::SendMsg(const Message& msg) {
-  	// find the socket
+#ifdef TEST_TIME
+	double start = cpu_second();
+#endif
+	// find the socket
   	int id = msg.meta.recver;
   	CHECK_NE(id, Meta::kEmpty);
 	if(recver_pid.find(id) == recver_pid.end()) {
@@ -493,6 +498,11 @@ int SHMVAN::SendMsg(const Message& msg) {
 
 	pid_t recv_pid = recver_pid[id];
 	struct VanBuf *buf = recver[recv_pid].second;
+
+#ifdef TEST_TIME
+	buf->sender_start = start;
+#endif
+
 
 	int meta_size; char* meta_buf;
   	PackMeta(msg.meta, &meta_buf, &meta_size);
@@ -548,8 +558,9 @@ int SHMVAN::RecvMsg(Message* msg)
 {
 	size_t  meta_size, data_num, len, l;
 
+#ifdef TIME_TEST
 	double start, elapse;
-	start = cpu_second();
+#endif
 	
 	msg->data.clear();
 	pid_t send_pid = pid_queue.WaitAndPop();
@@ -597,9 +608,15 @@ int SHMVAN::RecvMsg(Message* msg)
 	}
 	
 //	printf("Recv success, recv_pid: %d, send_pid: %d, size: %ld, meta_size: %ld, data_num: %ld\n", pid, send_pid, len, meta_size, data_num);
-	elapse = cpu_second() - start;
-	printf("[%s] times: %.3f, recv size: %ld, bandwidth: %.3fGB/s\n", __FUNCTION__, elapse, len, len / (elapse*1024*1024*1024));
-
+#ifdef TIME_TEST
+	elapse = cpu_second();
+	start = buf->sender_start;
+	elapse -= start;
+	printf("[%s] node %d to node %d cost times: %.3f,
+		size: %ld, bandwidth: %.3fGB/s\n", __FUNCTION__, msg->meta.sender, msg->meta.recver,
+		elapse, len, len / (elapse*1024*1024*1024));
+#endif
+	
 	return len;
 }
 
