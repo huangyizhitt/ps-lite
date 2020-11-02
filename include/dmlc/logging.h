@@ -300,4 +300,11 @@ class LogMessageVoidify {
 }  // namespace dmlc
 
 #endif
+
+#ifdef DEBUG
+#define DEBUGP(format, ...) printf(format, ##__VA_ARGS__)
+#else
+#define DEBUGP
+#endif
+
 #endif  // DMLC_LOGGING_H_

@@ -213,7 +213,7 @@ protected:
       		}	
     	}
 	elapse = cpu_second() - start;
-	printf("[%s] time: %.3f, recv size: %ld, bandwidth: %.3fGB/s\n", __FUNCTION__, elapse, recv_bytes, recv_bytes/(elapse*1024*1024*1024));
+	DEBUGP("[%s] time: %.3f, recv size: %ld, bandwidth: %.3fGB/s\n", __FUNCTION__, elapse, recv_bytes, recv_bytes/(elapse*1024*1024*1024));
     	return recv_bytes;
   }
 
