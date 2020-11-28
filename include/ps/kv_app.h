@@ -122,6 +122,22 @@ class KVWorker : public SimpleApp {
         priority);
   }
 
+
+//zero-copy push
+//vals will call zero-copy SArray
+int Push(const std::vector<Key>& keys,
+			const Val *vals, 
+			const size_t size,
+			const std::vector<int>& lens = {},
+			int cmd = 0,
+			const Callback& cb = nullptr,
+           int priority = 0) 
+{
+	return ZPush(
+		SArray<Key>(keys), SArray<Val>(vals, size), SArray<int>(lens), cmd, cb,
+        priority);
+}
+
   /**
    * \brief Pulls the values associated with the keys from the server nodes
    *
