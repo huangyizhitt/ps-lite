@@ -126,8 +126,8 @@ class KVWorker : public SimpleApp {
 //zero-copy push
 //vals will call zero-copy SArray
 int Push(const std::vector<Key>& keys,
-			const Val *vals, 
-			const size_t size,
+			Val *vals, 
+			size_t size,
 			const std::vector<int>& lens = {},
 			int cmd = 0,
 			const Callback& cb = nullptr,
